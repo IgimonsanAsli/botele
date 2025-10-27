@@ -35,6 +35,7 @@ const helpMessage = `
 ⚫ *Image to Black & White*
 • /hitamkan - Kirim gambar untuk dihitamkan
 • Reply gambar dengan /hitamkan
+• Kirim gambar dengan caption /hitamkan
 
 💡 *Contoh penggunaan:*
 \`/tiktok https://vt.tiktok.com/xxxxx\`
@@ -90,7 +91,7 @@ async function convertToBlackWhite(imageUrl) {
   try {
     const response = await axios.get('https://api.ferdev.my.id/maker/tohitam', {
       params: {
-        link: imageUrl,  // Parameter yang benar adalah 'link', bukan 'url'
+        link: imageUrl,
         apikey: FERDEV_API_KEY
       },
       responseType: 'arraybuffer',
@@ -109,48 +110,6 @@ async function convertToBlackWhite(imageUrl) {
   }
 }
 
-// Command /start
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
-});
-
-// Command /hitamkan
-// Command /hitamkan - PERBAIKAN
-bot.onText(/\/hitamkan/, async (msg) => {
-  const chatId = msg.chat.id;
-
-  // Cek apakah ini reply ke gambar
-  if (msg.reply_to_message && msg.reply_to_message.photo) {
-    await processHitamkan(chatId, msg.reply_to_message);
-  } else {
-    // SET FLAG bahwa user sedang menunggu untuk kirim gambar
-    waitingForImage[chatId] = true;
-    bot.sendMessage(chatId, '📸 Silakan kirim gambar yang ingin dihitamkan sekarang!');
-  }
-});
-
-// Handler untuk menerima gambar setelah command /hitamkan
-bot.on('photo', async (msg) => {
-  const chatId = msg.chat.id;
-  
-  // Cek apakah user sedang menunggu untuk mengirim gambar
-  if (waitingForImage[chatId]) {
-    delete waitingForImage[chatId];
-    await processHitamkan(chatId, msg);
-  }
-});
-
-waitingForImage[chatId] = true;
-
-// Auto-clear setelah 5 menit
-setTimeout(() => {
-  if (waitingForImage[chatId]) {
-    delete waitingForImage[chatId];
-    bot.sendMessage(chatId, '⏱️ Waktu habis. Silakan ketik /hitamkan lagi jika masih ingin menghitamkan gambar.');
-  }
-}, 5 * 60 * 1000);
-
 // Fungsi untuk memproses gambar menjadi hitam-putih
 async function processHitamkan(chatId, msg) {
   const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses penghitaman...');
@@ -161,7 +120,7 @@ async function processHitamkan(chatId, msg) {
     const fileId = photo.file_id;
 
     // Download foto dari Telegram
-    await bot.editMessageText('Mamproses penghitaman..', {
+    await bot.editMessageText('📥 Mengunduh gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
@@ -175,7 +134,7 @@ async function processHitamkan(chatId, msg) {
     const imageBuffer = Buffer.from(imageResponse.data);
 
     // Upload ke GitHub
-    await bot.editMessageText('Proses penghitaman...', {
+    await bot.editMessageText('☁️ Mengupload gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
@@ -184,7 +143,7 @@ async function processHitamkan(chatId, msg) {
     const uploadedUrl = await uploadImageToGitHub(imageBuffer, fileName);
 
     // Konversi ke hitam-putih menggunakan API
-    await bot.editMessageText('🎨 Berhasil menghitamkan!!!!!', {
+    await bot.editMessageText('🎨 Menghitamkan gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
@@ -196,7 +155,7 @@ async function processHitamkan(chatId, msg) {
 
     // Kirim gambar hasil
     await bot.sendPhoto(chatId, bwImageBuffer, {
-      caption: '*Gambar DIHITAMKAN*',
+      caption: '⚫ *Gambar Berhasil Dihitamkan!*',
       parse_mode: 'Markdown'
     });
 
@@ -221,6 +180,62 @@ async function processHitamkan(chatId, msg) {
     });
   }
 }
+
+// Command /start
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+});
+
+// Storage untuk menunggu gambar
+let waitingForImage = {};
+
+// Command /hitamkan - DIPERBAIKI
+bot.onText(/\/hitamkan/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  // CEK 1: Apakah ini reply ke gambar
+  if (msg.reply_to_message && msg.reply_to_message.photo) {
+    await processHitamkan(chatId, msg.reply_to_message);
+    return;
+  }
+
+  // CEK 2: Apakah pesan ini sendiri punya gambar (gambar dengan caption /hitamkan)
+  if (msg.photo && msg.photo.length > 0) {
+    await processHitamkan(chatId, msg);
+    return;
+  }
+
+  // CEK 3: Jika tidak ada gambar, set flag menunggu
+  waitingForImage[chatId] = true;
+  bot.sendMessage(chatId, '📸 Silakan kirim gambar yang ingin dihitamkan sekarang!');
+
+  // Auto-clear setelah 5 menit
+  setTimeout(() => {
+    if (waitingForImage[chatId]) {
+      delete waitingForImage[chatId];
+      bot.sendMessage(chatId, '⏱️ Waktu habis. Silakan ketik /hitamkan lagi jika masih ingin menghitamkan gambar.');
+    }
+  }, 5 * 60 * 1000);
+});
+
+// Handler untuk menerima gambar (DIPERBAIKI - harus di atas handler message umum)
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.caption || '';
+
+  // CEK: Apakah caption mengandung /hitamkan
+  if (text.includes('/hitamkan')) {
+    // Sudah dihandle oleh bot.onText, skip
+    return;
+  }
+
+  // CEK: Apakah user sedang menunggu untuk mengirim gambar
+  if (waitingForImage[chatId]) {
+    delete waitingForImage[chatId];
+    await processHitamkan(chatId, msg);
+  }
+});
 
 // Command /tiktok atau /t
 bot.onText(/\/(tiktok|t)\s+(.+)/, async (msg, match) => {
