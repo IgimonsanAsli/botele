@@ -4,22 +4,32 @@ const axios = require('axios');
 const sharp = require('sharp');
 const FormData = require('form-data');
 
-// Konfigurasi dari environment variables
+// ========================================
+// KONFIGURASI
+// ========================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const FERDEV_API_KEY = process.env.FERDEV_API_KEY;
-const UPLOADER_URL = process.env.UPLOADER_URL; // URL uploader Anda
+const UPLOADER_URL = process.env.UPLOADER_URL; // Contoh: https://your-app.railway.app
 
-if (!BOT_TOKEN || !FERDEV_API_KEY) {
-  console.error('Error: BOT_TOKEN dan FERDEV_API_KEY harus diisi di file .env');
+// Validasi environment variables
+if (!BOT_TOKEN || !FERDEV_API_KEY || !UPLOADER_URL) {
+  console.error('❌ Error: Environment variables tidak lengkap!');
+  console.error('Pastikan sudah set:');
+  console.error('- BOT_TOKEN');
+  console.error('- FERDEV_API_KEY');
+  console.error('- UPLOADER_URL');
   process.exit(1);
 }
 
 // Inisialisasi bot
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-console.log('Bot Telegram berhasil dijalankan!');
+console.log('✅ Bot Telegram berhasil dijalankan!');
+console.log(`📡 Uploader URL: ${UPLOADER_URL}`);
 
-// Pesan help menu
+// ========================================
+// HELP MESSAGE
+// ========================================
 const helpMessage = `
 🤖 *Selamat datang di Bot Downloader!*
 
@@ -45,6 +55,10 @@ const helpMessage = `
 _Bot ini mendukung video, foto, dan carousel!_
 `;
 
+// ========================================
+// UTILITY FUNCTIONS
+// ========================================
+
 // Fungsi untuk konversi gambar ke JPG
 async function convertImageToJpg(buffer, sourceUrl = '') {
   try {
@@ -55,8 +69,8 @@ async function convertImageToJpg(buffer, sourceUrl = '') {
     console.log(`✅ Image converted to JPG (source: ${sourceUrl})`);
     return convertedBuffer;
   } catch (error) {
-    console.error('Error converting image:', error);
-    return buffer;
+    console.error('❌ Error converting image:', error.message);
+    throw error;
   }
 }
 
@@ -66,31 +80,42 @@ async function uploadImageToGitHub(imageBuffer, fileName) {
     const formData = new FormData();
     formData.append('file', imageBuffer, fileName);
 
+    console.log(`📤 Uploading ${fileName} to GitHub...`);
+
     const response = await axios.post(`${UPLOADER_URL}/upload`, formData, {
       headers: {
         ...formData.getHeaders()
       },
-      timeout: 30000
+      timeout: 60000, // 60 detik timeout
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
     });
 
     if (response.data && response.data.url) {
-      console.log(`✅ Image uploaded to GitHub: ${response.data.url}`);
+      console.log(`✅ Image uploaded: ${response.data.url}`);
+      console.log(`⏰ Expires at: ${response.data.expiresAt}`);
       return response.data.url;
     } else {
       throw new Error('Invalid response from uploader');
     }
   } catch (error) {
-    console.error('Error uploading to GitHub:', error.message);
-    throw error;
+    console.error('❌ Error uploading to GitHub:', error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+    }
+    throw new Error(`Upload failed: ${error.message}`);
   }
 }
 
 // Fungsi untuk convert gambar ke hitam-putih menggunakan API
 async function convertToBlackWhite(imageUrl) {
   try {
+    console.log(`🎨 Converting to B&W: ${imageUrl}`);
+    
     const response = await axios.get('https://api.ferdev.my.id/maker/tohitam', {
       params: {
-        link: imageUrl,  // Parameter yang benar adalah 'link', bukan 'url'
+        link: imageUrl,
         apikey: FERDEV_API_KEY
       },
       responseType: 'arraybuffer',
@@ -104,16 +129,82 @@ async function convertToBlackWhite(imageUrl) {
       throw new Error('Invalid response from tohitam API');
     }
   } catch (error) {
-    console.error('Error converting to black & white:', error.message);
-    throw error;
+    console.error('❌ Error converting to black & white:', error.message);
+    throw new Error(`Conversion failed: ${error.message}`);
   }
 }
+
+// Fungsi untuk cek status uploader
+async function checkUploaderStatus() {
+  try {
+    const response = await axios.get(`${UPLOADER_URL}/health`, {
+      timeout: 10000
+    });
+    
+    if (response.data && response.data.status === 'ok') {
+      console.log('✅ Uploader service is healthy');
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error('⚠️  Uploader service health check failed:', error.message);
+    return false;
+  }
+}
+
+// ========================================
+// BOT COMMANDS
+// ========================================
 
 // Command /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
+
+// Command /status - Cek status uploader
+bot.onText(/\/status/, async (msg) => {
+  const chatId = msg.chat.id;
+  const statusMsg = await bot.sendMessage(chatId, '🔍 Checking uploader status...');
+  
+  try {
+    const response = await axios.get(`${UPLOADER_URL}/health`, { timeout: 10000 });
+    
+    if (response.data) {
+      const status = response.data;
+      const configStatus = status.config || {};
+      
+      const message = `
+✅ *Uploader Status*
+
+📊 Status: ${status.status === 'ok' ? '✅ Online' : '❌ Offline'}
+⏰ Time: ${status.timestamp}
+
+🔧 *Configuration:*
+• Owner: ${configStatus.owner === '✓' ? '✅' : '❌'}
+• Repo: ${configStatus.repo === '✓' ? '✅' : '❌'}
+• Token: ${configStatus.token === '✓' ? '✅' : '❌'}
+
+🔗 URL: ${UPLOADER_URL}
+      `;
+      
+      bot.editMessageText(message, {
+        chat_id: chatId,
+        message_id: statusMsg.message_id,
+        parse_mode: 'Markdown'
+      });
+    }
+  } catch (error) {
+    bot.editMessageText('❌ Uploader service is offline or unreachable', {
+      chat_id: chatId,
+      message_id: statusMsg.message_id
+    });
+  }
+});
+
+// ========================================
+// HITAMKAN FEATURE
+// ========================================
 
 // Command /hitamkan
 bot.onText(/\/hitamkan/, async (msg) => {
@@ -133,7 +224,6 @@ let waitingForImage = {};
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   
-  // Cek apakah user sedang menunggu untuk mengirim gambar
   if (waitingForImage[chatId]) {
     delete waitingForImage[chatId];
     await processHitamkan(chatId, msg);
@@ -142,14 +232,14 @@ bot.on('photo', async (msg) => {
 
 // Fungsi untuk memproses gambar menjadi hitam-putih
 async function processHitamkan(chatId, msg) {
-  const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses penghitaman...');
+  const processingMsg = await bot.sendMessage(chatId, '⏳ Memulai proses penghitaman...');
 
   try {
-    // Ambil foto dengan resolusi tertinggi
+    // 1. Ambil foto dengan resolusi tertinggi
     const photo = msg.photo[msg.photo.length - 1];
     const fileId = photo.file_id;
 
-    // Download foto dari Telegram
+    // 2. Download foto dari Telegram
     await bot.editMessageText('⬇️ Mengunduh gambar dari Telegram...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
@@ -162,46 +252,55 @@ async function processHitamkan(chatId, msg) {
     });
 
     const imageBuffer = Buffer.from(imageResponse.data);
+    console.log(`📥 Image downloaded: ${(imageBuffer.length / 1024).toFixed(2)} KB`);
 
-    // Upload ke GitHub
-    await bot.editMessageText('Proses penghitaman...', {
+    // 3. Konversi ke JPG jika perlu
+    await bot.editMessageText('🔄 Memproses gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
 
-    const fileName = `telegram_image_${Date.now()}.jpg`;
-    const uploadedUrl = await uploadImageToGitHub(imageBuffer, fileName);
+    const jpgBuffer = await convertImageToJpg(imageBuffer, 'telegram_photo');
 
-    // Konversi ke hitam-putih menggunakan API
-    await bot.editMessageText('🎨 Berhasil menghitamkan!!!!!', {
+    // 4. Upload ke GitHub
+    await bot.editMessageText('📤 Mengupload ke server...', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
+    });
+
+    const fileName = `telegram_${Date.now()}.jpg`;
+    const uploadedUrl = await uploadImageToGitHub(jpgBuffer, fileName);
+
+    // 5. Konversi ke hitam-putih menggunakan API
+    await bot.editMessageText('🎨 Mengubah ke hitam-putih...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
 
     const bwImageBuffer = await convertToBlackWhite(uploadedUrl);
 
-    // Hapus pesan processing
+    // 6. Hapus pesan processing
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
-    // Kirim gambar hasil
+    // 7. Kirim gambar hasil
     await bot.sendPhoto(chatId, bwImageBuffer, {
-      caption: '⚫⚪ *Gambar Hitam-Putih*\n\nGambar berhasil diubah menjadi hitam-putih!',
+      caption: '⚫⚪ *Gambar Hitam-Putih*\n\n✅ Gambar berhasil diubah menjadi hitam-putih!\n\n_File temporary akan dihapus otomatis dalam 24 jam_',
       parse_mode: 'Markdown'
     });
 
     console.log('✅ Hitamkan process completed successfully');
 
   } catch (error) {
-    console.error('Error processing hitamkan:', error);
+    console.error('❌ Error processing hitamkan:', error);
 
     let errorMessage = '❌ Terjadi kesalahan saat memproses gambar';
 
-    if (error.message.includes('upload')) {
-      errorMessage = '❌ Gagal mengupload gambar ke server. Silakan coba lagi.';
-    } else if (error.message.includes('tohitam')) {
-      errorMessage = '❌ Gagal mengubah gambar ke hitam-putih. Silakan coba lagi.';
+    if (error.message.includes('Upload failed')) {
+      errorMessage = '❌ Gagal mengupload gambar ke server.\n\nKemungkinan:\n• Server uploader offline\n• Koneksi terputus\n\nSilakan coba lagi atau cek /status';
+    } else if (error.message.includes('Conversion failed')) {
+      errorMessage = '❌ Gagal mengubah gambar ke hitam-putih.\n\nSilakan coba lagi dengan gambar lain.';
     } else if (error.code === 'ECONNABORTED') {
-      errorMessage = '❌ Timeout: Proses terlalu lama. Coba dengan gambar yang lebih kecil.';
+      errorMessage = '❌ Timeout: Proses terlalu lama.\n\nCoba dengan gambar yang lebih kecil.';
     }
 
     bot.editMessageText(errorMessage, {
@@ -211,7 +310,10 @@ async function processHitamkan(chatId, msg) {
   }
 }
 
-// Command /tiktok atau /t
+// ========================================
+// TIKTOK DOWNLOADER
+// ========================================
+
 bot.onText(/\/(tiktok|t)\s+(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const url = match[2].trim();
@@ -228,7 +330,8 @@ bot.onText(/\/(tiktok|t)\s+(.+)/, async (msg, match) => {
       params: {
         url: url,
         hd: 1
-      }
+      },
+      timeout: 30000
     });
 
     if (response.data.code !== 0 || !response.data.data) {
@@ -259,14 +362,20 @@ bot.onText(/\/(tiktok|t)\s+(.+)/, async (msg, match) => {
       parse_mode: 'Markdown'
     });
 
+    console.log('✅ TikTok video sent successfully');
+
   } catch (error) {
-    console.error('Error TikTok:', error.message);
+    console.error('❌ Error TikTok:', error.message);
     bot.editMessageText('❌ Terjadi kesalahan saat mengunduh video TikTok. Silakan coba lagi.', {
       chat_id: chatId,
       message_id: processingMsg.message_id
     });
   }
 });
+
+// ========================================
+// INSTAGRAM DOWNLOADER
+// ========================================
 
 // Handler Instagram Video
 async function handleInstagramVideo(chatId, responseData) {
@@ -277,7 +386,6 @@ async function handleInstagramVideo(chatId, responseData) {
     }
 
     const videoData = responseData.videoUrls[0];
-    const ext = videoData.ext;
     const videoUrl = videoData.url;
 
     if (!videoUrl) {
@@ -296,19 +404,12 @@ async function handleInstagramVideo(chatId, responseData) {
     });
 
     const videoBuffer = Buffer.from(videoResponse.data);
+    await bot.sendVideo(chatId, videoBuffer);
 
-    if (ext === "mp4") {
-      await bot.sendVideo(chatId, videoBuffer);
-    } else if (ext === "webp") {
-      await bot.sendMessage(chatId, '🔄 Mengonversi gambar ke JPG...');
-      const convertedBuffer = await convertImageToJpg(videoBuffer, videoUrl);
-      await bot.sendPhoto(chatId, convertedBuffer);
-    }
-
-    console.log(`✅ Instagram video sent successfully`);
+    console.log('✅ Instagram video sent successfully');
 
   } catch (error) {
-    console.error('Error handling Instagram video:', error);
+    console.error('❌ Error handling Instagram video:', error.message);
 
     if (error.code === 'ECONNABORTED') {
       await bot.sendMessage(chatId, '❌ Timeout: Video terlalu besar atau koneksi lambat');
@@ -338,10 +439,6 @@ async function handleInstagramImage(chatId, responseData) {
       }
     } else if (responseData.imageUrls && responseData.imageUrls.length > 0) {
       imageUrl = responseData.imageUrls[0].url || responseData.imageUrls[0];
-    } else if (responseData.mediaUrls && responseData.mediaUrls.length > 0) {
-      imageUrl = responseData.mediaUrls[0].url || responseData.mediaUrls[0];
-    } else if (responseData.url) {
-      imageUrl = responseData.url;
     }
 
     if (!imageUrl) {
@@ -355,50 +452,19 @@ async function handleInstagramImage(chatId, responseData) {
       responseType: 'arraybuffer',
       timeout: 30000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
 
-    const contentType = imageResponse.headers['content-type'] || '';
-    const urlLower = imageUrl.toLowerCase();
     const originalBuffer = Buffer.from(imageResponse.data);
+    const convertedBuffer = await convertImageToJpg(originalBuffer, imageUrl);
     
-    const isAlreadyJpg = (contentType.includes('jpeg') || contentType.includes('jpg')) ||
-                        (urlLower.includes('.jpg') || urlLower.includes('.jpeg'));
-    
-    const needsConversion = !isAlreadyJpg || 
-                           contentType.includes('heic') || 
-                           contentType.includes('webp') ||
-                           contentType.includes('png') ||
-                           contentType.includes('gif') ||
-                           urlLower.includes('.heic') || 
-                           urlLower.includes('.webp') ||
-                           urlLower.includes('.png') ||
-                           urlLower.includes('.gif');
-
-    if (needsConversion) {
-      await bot.sendMessage(chatId, '🔄 Mengonversi gambar ke JPG...');
-      const convertedBuffer = await convertImageToJpg(originalBuffer, imageUrl);
-      await bot.sendPhoto(chatId, convertedBuffer);
-      console.log(`✅ Instagram image converted and sent (${contentType || 'unknown'} -> JPEG)`);
-    } else {
-      await bot.sendPhoto(chatId, originalBuffer);
-      console.log(`✅ Instagram image sent (already JPEG)`);
-    }
+    await bot.sendPhoto(chatId, convertedBuffer);
+    console.log('✅ Instagram image sent successfully');
 
   } catch (error) {
-    console.error('Error handling Instagram image:', error);
-
-    if (error.code === 'ECONNABORTED') {
-      await bot.sendMessage(chatId, '❌ Timeout: Gambar terlalu besar atau koneksi lambat');
-    } else if (error.response?.status === 403) {
-      await bot.sendMessage(chatId, '❌ Akses ke gambar ditolak. Coba link lain');
-    } else if (error.response?.status === 404) {
-      await bot.sendMessage(chatId, '❌ Gambar tidak ditemukan atau sudah dihapus');
-    } else {
-      await bot.sendMessage(chatId, '❌ Gagal mengunduh gambar Instagram');
-    }
+    console.error('❌ Error handling Instagram image:', error.message);
+    await bot.sendMessage(chatId, '❌ Gagal mengunduh gambar Instagram');
   }
 }
 
@@ -410,7 +476,7 @@ async function handleInstagramCarousel(chatId, responseData) {
       return;
     }
 
-    await bot.sendMessage(chatId, `⬇️ Sedang mengunduh ${responseData.slides.length} media dari carousel...`);
+    await bot.sendMessage(chatId, `⬇️ Mengunduh ${responseData.slides.length} media dari carousel...`);
 
     let successCount = 0;
     let failCount = 0;
@@ -427,7 +493,6 @@ async function handleInstagramCarousel(chatId, responseData) {
         }
 
         if (!mediaUrl) {
-          console.log(`❌ Media URL tidak ditemukan untuk slide ${i + 1}`);
           failCount++;
           continue;
         }
@@ -436,70 +501,41 @@ async function handleInstagramCarousel(chatId, responseData) {
           responseType: 'arraybuffer',
           timeout: 45000,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'image/*,video/*,*/*;q=0.8'
+            'User-Agent': 'Mozilla/5.0'
           }
         });
 
         const contentType = mediaResponse.headers['content-type'] || '';
         const mediaBuffer = Buffer.from(mediaResponse.data);
-        const slideType = slide.mediaUrls?.[0]?.type || '';
-        const urlExt = mediaUrl.toLowerCase();
 
-        if (contentType.includes('video') ||
-            slideType === 'mp4' ||
-            urlExt.includes('.mp4') ||
-            urlExt.includes('video')) {
-
+        if (contentType.includes('video') || mediaUrl.toLowerCase().includes('.mp4')) {
           await bot.sendVideo(chatId, mediaBuffer);
-
         } else {
-          const needsConversion = contentType.includes('heic') || 
-                                 contentType.includes('webp') ||
-                                 urlExt.includes('.heic') || 
-                                 urlExt.includes('.webp') ||
-                                 urlExt.includes('.png') ||
-                                 slideType === 'heic';
-
-          let finalBuffer = mediaBuffer;
-
-          if (needsConversion) {
-            finalBuffer = await convertImageToJpg(mediaBuffer, mediaUrl);
-            console.log(`🔄 Carousel media ${i + 1} converted to JPG`);
-          }
-
-          await bot.sendPhoto(chatId, finalBuffer);
+          const convertedBuffer = await convertImageToJpg(mediaBuffer, mediaUrl);
+          await bot.sendPhoto(chatId, convertedBuffer);
         }
 
         successCount++;
-        console.log(`✅ Carousel media ${i + 1} sent successfully (${contentType || 'unknown type'})`);
+        console.log(`✅ Carousel media ${i + 1}/${responseData.slides.length} sent`);
 
         if (i < responseData.slides.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 1500));
         }
 
       } catch (mediaError) {
-        console.error(`Error downloading carousel media ${i + 1}:`, mediaError);
+        console.error(`❌ Error carousel media ${i + 1}:`, mediaError.message);
         failCount++;
-        continue;
       }
     }
 
-    if (successCount > 0) {
-      const summaryMessage = failCount > 0
-        ? `✅ Berhasil mengunduh ${successCount} media, ${failCount} gagal`
-        : `✅ Semua ${successCount} media berhasil diunduh`;
+    const summaryMessage = failCount > 0
+      ? `✅ Berhasil: ${successCount}, Gagal: ${failCount}`
+      : `✅ Semua ${successCount} media berhasil diunduh`;
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      await bot.sendMessage(chatId, summaryMessage);
-    } else {
-      await bot.sendMessage(chatId, '❌ Gagal mengunduh semua media dari carousel');
-    }
-
-    console.log(`✅ Instagram carousel processed: ${successCount} success, ${failCount} failed`);
+    await bot.sendMessage(chatId, summaryMessage);
 
   } catch (error) {
-    console.error('Error handling Instagram carousel:', error);
+    console.error('❌ Error handling carousel:', error.message);
     await bot.sendMessage(chatId, '❌ Gagal memproses carousel Instagram');
   }
 }
@@ -514,7 +550,7 @@ bot.onText(/\/ig\s+(.+)/, async (msg, match) => {
     return;
   }
 
-  const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses media Instagram...');
+  const processingMsg = await bot.sendMessage(chatId, '⏳ Memproses media Instagram...');
 
   try {
     const { data } = await axios.get('https://api.ferdev.my.id/downloader/instagram', {
@@ -525,8 +561,8 @@ bot.onText(/\/ig\s+(.+)/, async (msg, match) => {
       timeout: 30000
     });
 
-    if (!data || !data.success) {
-      bot.editMessageText('❌ Gagal mendownload konten Instagram\nSilakan coba lagi', {
+    if (!data || !data.success || !data.data || !data.data.success) {
+      bot.editMessageText('❌ Gagal mendownload konten Instagram', {
         chat_id: chatId,
         message_id: processingMsg.message_id
       });
@@ -534,89 +570,67 @@ bot.onText(/\/ig\s+(.+)/, async (msg, match) => {
     }
 
     const responseData = data.data;
-
-    if (!responseData || !responseData.success) {
-      bot.editMessageText('❌ Gagal memproses konten Instagram\nSilakan coba lagi', {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-      return;
-    }
-
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
-    let isActuallyImage = false;
-    let isActuallyVideo = false;
-
-    if (responseData.videoUrls && responseData.videoUrls.length > 0) {
-      const mediaItem = responseData.videoUrls[0];
-      const mediaType = mediaItem.type || mediaItem.ext || '';
-      
-      if (mediaType.toLowerCase().includes('heic') || 
-          mediaType.toLowerCase().includes('jpg') || 
-          mediaType.toLowerCase().includes('jpeg') || 
-          mediaType.toLowerCase().includes('png') || 
-          mediaType.toLowerCase().includes('webp') ||
-          mediaType.toLowerCase().includes('image')) {
-        isActuallyImage = true;
-      } else if (mediaType.toLowerCase().includes('mp4') || 
-                mediaType.toLowerCase().includes('video')) {
-        isActuallyVideo = true;
-      }
-    }
-
-    if (responseData.thumbnailUrl && !isActuallyVideo) {
-      isActuallyImage = true;
-    }
-
-    if (isActuallyVideo || (responseData.type === 'video' && !isActuallyImage)) {
+    // Deteksi tipe konten
+    if (responseData.type === 'video') {
       await handleInstagramVideo(chatId, responseData);
-    } else if (isActuallyImage || responseData.type === 'image' || responseData.thumbnailUrl) {
+    } else if (responseData.type === 'image') {
       await handleInstagramImage(chatId, responseData);
     } else if (responseData.type === 'slide') {
       await handleInstagramCarousel(chatId, responseData);
     } else {
-      if (responseData.thumbnailUrl) {
-        await handleInstagramImage(chatId, responseData);
-      } else {
-        await bot.sendMessage(chatId, '❌ Tipe konten Instagram tidak didukung');
-      }
+      await bot.sendMessage(chatId, '❌ Tipe konten tidak didukung');
     }
 
   } catch (error) {
-    console.error('Error processing Instagram download:', error);
-
-    if (error.code === 'ECONNABORTED') {
-      bot.editMessageText('❌ Timeout: Server terlalu lambat merespons', {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-    } else if (error.response?.status === 429) {
-      bot.editMessageText('❌ Terlalu banyak request. Coba lagi dalam beberapa menit', {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-    } else {
-      bot.editMessageText('❌ Terjadi kesalahan saat mendownload', {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-    }
+    console.error('❌ Error Instagram:', error.message);
+    
+    bot.editMessageText('❌ Terjadi kesalahan saat mendownload', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
+    });
   }
 });
+
+// ========================================
+// ERROR HANDLERS
+// ========================================
 
 // Handler untuk pesan yang tidak dikenali
 bot.on('message', (msg) => {
   const text = msg.text;
   
   if (text && text.startsWith('/')) {
-    if (!text.match(/^\/(start|tiktok|t|ig|hitamkan)\b/)) {
+    if (!text.match(/^\/(start|tiktok|t|ig|hitamkan|status)\b/)) {
       bot.sendMessage(msg.chat.id, '❌ Command tidak dikenali. Ketik /start untuk melihat menu bantuan.');
     }
   }
 });
 
-// Error handling
+// Error handling untuk polling
 bot.on('polling_error', (error) => {
-  console.error('Polling error:', error.message);
+  console.error('❌ Polling error:', error.message);
 });
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Stopping bot...');
+  bot.stopPolling();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Stopping bot...');
+  bot.stopPolling();
+  process.exit(0);
+});
+
+// Cek uploader status saat startup
+setTimeout(async () => {
+  const isHealthy = await checkUploaderStatus();
+  if (!isHealthy) {
+    console.warn('⚠️  Warning: Uploader service might be offline');
+    console.warn('Check your UPLOADER_URL:', UPLOADER_URL);
+  }
+}, 3000);
