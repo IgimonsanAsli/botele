@@ -7,7 +7,7 @@ const FormData = require('form-data');
 // Konfigurasi dari environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const FERDEV_API_KEY = process.env.FERDEV_API_KEY;
-const UPLOADER_URL = process.env.UPLOADER_URL || 'http://localhost:3000'; // URL uploader Anda
+const UPLOADER_URL = process.env.UPLOADER_URL; // URL uploader Anda
 
 if (!BOT_TOKEN || !FERDEV_API_KEY) {
   console.error('Error: BOT_TOKEN dan FERDEV_API_KEY harus diisi di file .env');
