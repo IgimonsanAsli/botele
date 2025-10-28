@@ -37,11 +37,17 @@ const helpMessage = `
 • Reply gambar dengan /hitamkan
 • Kirim gambar dengan caption /hitamkan
 
+✨ *Image Enhancer (Remini)*
+• /remini - Tingkatkan kualitas gambar
+• Reply gambar dengan /remini
+• Kirim gambar dengan caption /remini
+
 💡 *Contoh penggunaan:*
 \`/tiktok https://vt.tiktok.com/xxxxx\`
 \`/t https://vt.tiktok.com/xxxxx\`
 \`/ig https://www.instagram.com/p/xxxxx\`
 \`/hitamkan\` (lalu kirim gambar)
+\`/remini\` (lalu kirim gambar)
 
 _Bot ini mendukung video, foto, dan carousel!_
 `;
@@ -106,6 +112,29 @@ async function convertToBlackWhite(imageUrl) {
     }
   } catch (error) {
     console.error('Error converting to black & white:', error.message);
+    throw error;
+  }
+}
+
+// Fungsi untuk enhance gambar menggunakan Remini API
+async function enhanceImageWithRemini(imageUrl) {
+  try {
+    const response = await axios.get('https://api.ferdev.my.id/tools/remini', {
+      params: {
+        link: imageUrl,
+        apikey: FERDEV_API_KEY
+      },
+      timeout: 90000 // 90 detik untuk proses yang lebih lama
+    });
+
+    if (response.data && response.data.success && response.data.data) {
+      console.log('✅ Image enhanced with Remini successfully');
+      return response.data.data; // URL gambar hasil
+    } else {
+      throw new Error('Invalid response from Remini API');
+    }
+  } catch (error) {
+    console.error('Error enhancing with Remini:', error.message);
     throw error;
   }
 }
@@ -187,8 +216,96 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
+// Fungsi untuk memproses gambar dengan Remini (enhance quality)
+async function processRemini(chatId, msg) {
+  const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses peningkatan kualitas gambar...');
+
+  try {
+    // Ambil foto dengan resolusi tertinggi
+    const photo = msg.photo[msg.photo.length - 1];
+    const fileId = photo.file_id;
+
+    // Download foto dari Telegram
+    await bot.editMessageText('📥 Mengunduh gambar...', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
+    });
+
+    const fileLink = await bot.getFileLink(fileId);
+    const imageResponse = await axios.get(fileLink, {
+      responseType: 'arraybuffer',
+      timeout: 30000
+    });
+
+    const imageBuffer = Buffer.from(imageResponse.data);
+
+    // Upload ke GitHub
+    await bot.editMessageText('☁️ Mengupload gambar...', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
+    });
+
+    const fileName = `telegram_remini_${Date.now()}.jpg`;
+    const uploadedUrl = await uploadImageToGitHub(imageBuffer, fileName);
+
+    // Enhance dengan Remini API
+    await bot.editMessageText('✨ Meningkatkan kualitas gambar...\n_Proses ini mungkin memakan waktu 30-60 detik_', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id,
+      parse_mode: 'Markdown'
+    });
+
+    const enhancedImageUrl = await enhanceImageWithRemini(uploadedUrl);
+
+    // Download gambar hasil dari URL
+    await bot.editMessageText('📥 Mengunduh hasil...', {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
+    });
+
+    const enhancedResponse = await axios.get(enhancedImageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000
+    });
+
+    const enhancedBuffer = Buffer.from(enhancedResponse.data);
+
+    // Hapus pesan processing
+    await bot.deleteMessage(chatId, processingMsg.message_id);
+
+    // Kirim gambar hasil
+    await bot.sendPhoto(chatId, enhancedBuffer, {
+      caption: '✨ *Gambar Berhasil Ditingkatkan Kualitasnya!*\n\n_Powered by Remini AI_',
+      parse_mode: 'Markdown'
+    });
+
+    console.log('✅ Remini process completed successfully');
+
+  } catch (error) {
+    console.error('Error processing remini:', error);
+
+    let errorMessage = '❌ Terjadi kesalahan saat memproses gambar';
+
+    if (error.message.includes('upload')) {
+      errorMessage = '❌ Gagal mengupload gambar ke server. Silakan coba lagi.';
+    } else if (error.message.includes('Remini')) {
+      errorMessage = '❌ Gagal meningkatkan kualitas gambar. Silakan coba lagi.';
+    } else if (error.code === 'ECONNABORTED') {
+      errorMessage = '❌ Timeout: Proses terlalu lama. Coba dengan gambar yang lebih kecil.';
+    } else if (error.response?.status === 429) {
+      errorMessage = '❌ Terlalu banyak request. Tunggu beberapa menit lalu coba lagi.';
+    }
+
+    bot.editMessageText(errorMessage, {
+      chat_id: chatId,
+      message_id: processingMsg.message_id
+    });
+  }
+}
+
 // Storage untuk menunggu gambar
 let waitingForImage = {};
+let waitingForRemini = {};
 
 // Command /hitamkan - FIXED
 bot.onText(/\/hitamkan/, async (msg) => {
@@ -219,15 +336,54 @@ bot.onText(/\/hitamkan/, async (msg) => {
   }, 5 * 60 * 1000);
 });
 
+// Command /remini - Enhance image quality
+bot.onText(/\/remini/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  // CEK 1: Apakah ini reply ke gambar
+  if (msg.reply_to_message && msg.reply_to_message.photo) {
+    await processRemini(chatId, msg.reply_to_message);
+    return;
+  }
+
+  // CEK 2: Apakah pesan ini sendiri punya gambar (gambar dengan caption /remini)
+  if (msg.photo && msg.photo.length > 0) {
+    await processRemini(chatId, msg);
+    return;
+  }
+
+  // CEK 3: Jika tidak ada gambar, set flag menunggu
+  waitingForRemini[chatId] = true;
+  bot.sendMessage(chatId, '✨ Silakan kirim gambar yang ingin ditingkatkan kualitasnya sekarang!\n\n_Remini AI akan meningkatkan resolusi dan detail gambar Anda_', {
+    parse_mode: 'Markdown'
+  });
+
+  // Auto-clear setelah 5 menit
+  setTimeout(() => {
+    if (waitingForRemini[chatId]) {
+      delete waitingForRemini[chatId];
+      bot.sendMessage(chatId, '⏱️ Waktu habis. Silakan ketik /remini lagi jika masih ingin meningkatkan kualitas gambar.');
+    }
+  }, 5 * 60 * 1000);
+});
+
 // Handler untuk menerima gambar - FIXED
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
+  const caption = msg.caption || '';
 
-  // HANYA proses jika user sedang menunggu DAN caption BUKAN /hitamkan
-  // Jika caption adalah /hitamkan, biarkan bot.onText yang handle
-  if (waitingForImage[chatId] && (!msg.caption || !msg.caption.includes('/hitamkan'))) {
+  // Cek apakah sedang menunggu untuk /hitamkan
+  if (waitingForImage[chatId] && !caption.includes('/hitamkan') && !caption.includes('/remini')) {
     delete waitingForImage[chatId];
     await processHitamkan(chatId, msg);
+    return;
+  }
+
+  // Cek apakah sedang menunggu untuk /remini
+  if (waitingForRemini[chatId] && !caption.includes('/remini') && !caption.includes('/hitamkan')) {
+    delete waitingForRemini[chatId];
+    await processRemini(chatId, msg);
+    return;
   }
 });
 
