@@ -781,12 +781,13 @@ bot.onText(/\/ig\s+(.+)/, async (msg, match) => {
   }
 });
 
-// Handler untuk pesan yang tidak dikenali
+// Handler untuk pesan yang tidak dikenali - FIXED: Tambahkan /remini
 bot.on('message', (msg) => {
   const text = msg.text;
   
   if (text && text.startsWith('/')) {
-    if (!text.match(/^\/(start|tiktok|t|ig|hitamkan)\b/)) {
+    // Tambahkan /remini ke dalam daftar command yang valid
+    if (!text.match(/^\/(start|tiktok|t|ig|hitamkan|remini)\b/)) {
       bot.sendMessage(msg.chat.id, '❌ Command tidak dikenali. Ketik /start untuk melihat menu bantuan.');
     }
   }
