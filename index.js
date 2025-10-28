@@ -190,7 +190,7 @@ bot.onText(/\/start/, (msg) => {
 // Storage untuk menunggu gambar
 let waitingForImage = {};
 
-// Command /hitamkan - DIPERBAIKI
+// Command /hitamkan - FIXED
 bot.onText(/\/hitamkan/, async (msg) => {
   const chatId = msg.chat.id;
 
@@ -219,19 +219,13 @@ bot.onText(/\/hitamkan/, async (msg) => {
   }, 5 * 60 * 1000);
 });
 
-// Handler untuk menerima gambar (DIPERBAIKI - harus di atas handler message umum)
+// Handler untuk menerima gambar - FIXED
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
-  const text = msg.caption || '';
 
-  // CEK: Apakah caption mengandung /hitamkan
-  if (text.includes('/hitamkan')) {
-    // Sudah dihandle oleh bot.onText, skip
-    return;
-  }
-
-  // CEK: Apakah user sedang menunggu untuk mengirim gambar
-  if (waitingForImage[chatId]) {
+  // HANYA proses jika user sedang menunggu DAN caption BUKAN /hitamkan
+  // Jika caption adalah /hitamkan, biarkan bot.onText yang handle
+  if (waitingForImage[chatId] && (!msg.caption || !msg.caption.includes('/hitamkan'))) {
     delete waitingForImage[chatId];
     await processHitamkan(chatId, msg);
   }
