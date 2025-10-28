@@ -3,19 +3,21 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const sharp = require('sharp');
 const FormData = require('form-data');
+const TikTokDownloader = require('./tiktokdownloader'); // Import TikTokDownloader
 
 // Konfigurasi dari environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const FERDEV_API_KEY = process.env.FERDEV_API_KEY;
-const UPLOADER_URL = process.env.UPLOADER_URL; // URL uploader Anda
+const UPLOADER_URL = process.env.UPLOADER_URL;
 
 if (!BOT_TOKEN || !FERDEV_API_KEY) {
   console.error('Error: BOT_TOKEN dan FERDEV_API_KEY harus diisi di file .env');
   process.exit(1);
 }
 
-// Inisialisasi bot
+// Inisialisasi bot dan TikTokDownloader
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const tiktokDownloader = new TikTokDownloader();
 
 console.log('Bot Telegram berhasil dijalankan!');
 
@@ -26,7 +28,7 @@ const helpMessage = `
 📱 *Fitur yang tersedia:*
 
 🎵 *TikTok Downloader*
-• /tiktok <url> - Download video TikTok
+• /tiktok <url> - Download video/carousel TikTok
 • /t <url> - Shortcut untuk TikTok
 
 📸 *Instagram Downloader*
@@ -44,13 +46,17 @@ const helpMessage = `
 
 💡 *Contoh penggunaan:*
 \`/tiktok https://vt.tiktok.com/xxxxx\`
-\`/t https://vt.tiktok.com/xxxxx\`
+\`/t https://www.tiktok.com/@user/video/xxxxx\`
 \`/ig https://www.instagram.com/p/xxxxx\`
 \`/hitamkan\` (lalu kirim gambar)
 \`/remini\` (lalu kirim gambar)
 
-_Bot ini mendukung video, foto, dan carousel!_
+_Bot ini mendukung video, foto, carousel, dan slideshow!_
 `;
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
 
 // Fungsi untuk konversi gambar ke JPG
 async function convertImageToJpg(buffer, sourceUrl = '') {
@@ -124,12 +130,12 @@ async function enhanceImageWithRemini(imageUrl) {
         link: imageUrl,
         apikey: FERDEV_API_KEY
       },
-      timeout: 90000 // 90 detik untuk proses yang lebih lama
+      timeout: 90000
     });
 
     if (response.data && response.data.success && response.data.data) {
       console.log('✅ Image enhanced with Remini successfully');
-      return response.data.data; // URL gambar hasil
+      return response.data.data;
     } else {
       throw new Error('Invalid response from Remini API');
     }
@@ -139,16 +145,31 @@ async function enhanceImageWithRemini(imageUrl) {
   }
 }
 
+// Helper function untuk format stats
+function formatStats(stats) {
+  if (!stats) return '';
+  
+  const formatNumber = (num) => {
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return num.toString();
+  };
+
+  return `👁️ ${formatNumber(stats.views)} • ❤️ ${formatNumber(stats.likes)} • 💬 ${formatNumber(stats.comments)} • 🔄 ${formatNumber(stats.shares)}`;
+}
+
+// ============================================
+// IMAGE PROCESSING FUNCTIONS
+// ============================================
+
 // Fungsi untuk memproses gambar menjadi hitam-putih
 async function processHitamkan(chatId, msg) {
   const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses penghitaman...');
 
   try {
-    // Ambil foto dengan resolusi tertinggi
     const photo = msg.photo[msg.photo.length - 1];
     const fileId = photo.file_id;
 
-    // Download foto dari Telegram
     await bot.editMessageText('📥 Mengunduh gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
@@ -162,7 +183,6 @@ async function processHitamkan(chatId, msg) {
 
     const imageBuffer = Buffer.from(imageResponse.data);
 
-    // Upload ke GitHub
     await bot.editMessageText('☁️ Mengupload gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
@@ -171,7 +191,6 @@ async function processHitamkan(chatId, msg) {
     const fileName = `telegram_image_${Date.now()}.jpg`;
     const uploadedUrl = await uploadImageToGitHub(imageBuffer, fileName);
 
-    // Konversi ke hitam-putih menggunakan API
     await bot.editMessageText('🎨 Menghitamkan gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
@@ -179,10 +198,8 @@ async function processHitamkan(chatId, msg) {
 
     const bwImageBuffer = await convertToBlackWhite(uploadedUrl);
 
-    // Hapus pesan processing
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
-    // Kirim gambar hasil
     await bot.sendPhoto(chatId, bwImageBuffer, {
       caption: '⚫ *Gambar Berhasil Dihitamkan!*',
       parse_mode: 'Markdown'
@@ -210,22 +227,14 @@ async function processHitamkan(chatId, msg) {
   }
 }
 
-// Command /start
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
-});
-
-// Fungsi untuk memproses gambar dengan Remini (enhance quality)
+// Fungsi untuk memproses gambar dengan Remini
 async function processRemini(chatId, msg) {
   const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses peningkatan kualitas gambar...');
 
   try {
-    // Ambil foto dengan resolusi tertinggi
     const photo = msg.photo[msg.photo.length - 1];
     const fileId = photo.file_id;
 
-    // Download foto dari Telegram
     await bot.editMessageText('📥 Mengunduh gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
@@ -239,7 +248,6 @@ async function processRemini(chatId, msg) {
 
     const imageBuffer = Buffer.from(imageResponse.data);
 
-    // Upload ke GitHub
     await bot.editMessageText('☁️ Mengupload gambar...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
@@ -248,7 +256,6 @@ async function processRemini(chatId, msg) {
     const fileName = `telegram_remini_${Date.now()}.jpg`;
     const uploadedUrl = await uploadImageToGitHub(imageBuffer, fileName);
 
-    // Enhance dengan Remini API
     await bot.editMessageText('✨ Meningkatkan kualitas gambar...\n_Proses ini mungkin memakan waktu 30-60 detik_', {
       chat_id: chatId,
       message_id: processingMsg.message_id,
@@ -257,7 +264,6 @@ async function processRemini(chatId, msg) {
 
     const enhancedImageUrl = await enhanceImageWithRemini(uploadedUrl);
 
-    // Download gambar hasil dari URL
     await bot.editMessageText('📥 Mengunduh hasil...', {
       chat_id: chatId,
       message_id: processingMsg.message_id
@@ -270,10 +276,8 @@ async function processRemini(chatId, msg) {
 
     const enhancedBuffer = Buffer.from(enhancedResponse.data);
 
-    // Hapus pesan processing
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
-    // Kirim gambar hasil
     await bot.sendPhoto(chatId, enhancedBuffer, {
       caption: '✨ *Gambar Berhasil Ditingkatkan Kualitasnya!*\n\n_Powered by Remini AI_',
       parse_mode: 'Markdown'
@@ -303,146 +307,162 @@ async function processRemini(chatId, msg) {
   }
 }
 
-// Storage untuk menunggu gambar
-let waitingForImage = {};
-let waitingForRemini = {};
+// ============================================
+// TIKTOK HANDLER
+// ============================================
 
-// Command /hitamkan - FIXED
-bot.onText(/\/hitamkan/, async (msg) => {
-  const chatId = msg.chat.id;
-
-  // CEK 1: Apakah ini reply ke gambar
-  if (msg.reply_to_message && msg.reply_to_message.photo) {
-    await processHitamkan(chatId, msg.reply_to_message);
-    return;
-  }
-
-  // CEK 2: Apakah pesan ini sendiri punya gambar (gambar dengan caption /hitamkan)
-  if (msg.photo && msg.photo.length > 0) {
-    await processHitamkan(chatId, msg);
-    return;
-  }
-
-  // CEK 3: Jika tidak ada gambar, set flag menunggu
-  waitingForImage[chatId] = true;
-  bot.sendMessage(chatId, '📸 Silakan kirim gambar yang ingin dihitamkan sekarang!');
-
-  // Auto-clear setelah 5 menit
-  setTimeout(() => {
-    if (waitingForImage[chatId]) {
-      delete waitingForImage[chatId];
-      bot.sendMessage(chatId, '⏱️ Waktu habis. Silakan ketik /hitamkan lagi jika masih ingin menghitamkan gambar.');
-    }
-  }, 5 * 60 * 1000);
-});
-
-// Command /remini - Enhance image quality
-bot.onText(/\/remini/, async (msg) => {
-  const chatId = msg.chat.id;
-
-  // CEK 1: Apakah ini reply ke gambar
-  if (msg.reply_to_message && msg.reply_to_message.photo) {
-    await processRemini(chatId, msg.reply_to_message);
-    return;
-  }
-
-  // CEK 2: Apakah pesan ini sendiri punya gambar (gambar dengan caption /remini)
-  if (msg.photo && msg.photo.length > 0) {
-    await processRemini(chatId, msg);
-    return;
-  }
-
-  // CEK 3: Jika tidak ada gambar, set flag menunggu
-  waitingForRemini[chatId] = true;
-  bot.sendMessage(chatId, '✨ Silakan kirim gambar yang ingin ditingkatkan kualitasnya sekarang!\n\n_Remini AI akan meningkatkan resolusi dan detail gambar Anda_', {
-    parse_mode: 'Markdown'
-  });
-
-  // Auto-clear setelah 5 menit
-  setTimeout(() => {
-    if (waitingForRemini[chatId]) {
-      delete waitingForRemini[chatId];
-      bot.sendMessage(chatId, '⏱️ Waktu habis. Silakan ketik /remini lagi jika masih ingin meningkatkan kualitas gambar.');
-    }
-  }, 5 * 60 * 1000);
-});
-
-// Handler untuk menerima gambar - FIXED
-bot.on('photo', async (msg) => {
-  const chatId = msg.chat.id;
-  const caption = msg.caption || '';
-
-  // Cek apakah sedang menunggu untuk /hitamkan
-  if (waitingForImage[chatId] && !caption.includes('/hitamkan') && !caption.includes('/remini')) {
-    delete waitingForImage[chatId];
-    await processHitamkan(chatId, msg);
-    return;
-  }
-
-  // Cek apakah sedang menunggu untuk /remini
-  if (waitingForRemini[chatId] && !caption.includes('/remini') && !caption.includes('/hitamkan')) {
-    delete waitingForRemini[chatId];
-    await processRemini(chatId, msg);
-    return;
-  }
-});
-
-// Command /tiktok atau /t
+// Command /tiktok atau /t - IMPROVED VERSION dengan TikTokDownloader
 bot.onText(/\/(tiktok|t)\s+(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const url = match[2].trim();
 
   if (!url) {
-    bot.sendMessage(chatId, '❌ Mohon masukkan URL TikTok!\nContoh: /tiktok https://vt.tiktok.com/xxxxx');
+    bot.sendMessage(chatId, '❌ Mohon masukkan URL TikTok!\n\nContoh:\n/tiktok https://vt.tiktok.com/xxxxx\n/t https://www.tiktok.com/@user/video/xxxxx\n/t https://vm.tiktok.com/xxxxx');
     return;
   }
 
-  const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses video TikTok...');
+  // Validasi apakah URL mengandung domain TikTok
+  if (!url.match(/tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com/i)) {
+    bot.sendMessage(chatId, '❌ URL tidak valid! Pastikan ini adalah link TikTok yang benar.');
+    return;
+  }
+
+  const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses konten TikTok...');
 
   try {
-    const response = await axios.get('https://www.tikwm.com/api/', {
-      params: {
-        url: url,
-        hd: 1
-      }
-    });
+    // Gunakan class TikTokDownloader untuk mendapatkan info konten
+    const contentInfo = await tiktokDownloader.downloadContent(url);
 
-    if (response.data.code !== 0 || !response.data.data) {
-      bot.editMessageText('❌ Gagal mengunduh video. Pastikan URL valid!', {
+    if (!contentInfo.success) {
+      bot.editMessageText(`❌ ${contentInfo.error || 'Gagal mengunduh konten TikTok'}\n\nPastikan:\n• Link masih aktif\n• Video tidak di-private\n• Format URL benar`, {
         chat_id: chatId,
         message_id: processingMsg.message_id
       });
       return;
     }
 
-    const data = response.data.data;
-    const videoUrl = data.hdplay || data.play || data.wmplay;
-    const title = data.title || 'TikTok Video';
-    const author = data.author?.unique_id || 'Unknown';
-
-    if (!videoUrl) {
-      bot.editMessageText('❌ URL video tidak ditemukan!', {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-      return;
-    }
-
+    // Hapus pesan processing
     await bot.deleteMessage(chatId, processingMsg.message_id);
 
-    await bot.sendVideo(chatId, videoUrl, {
-      caption: `🎵 *TikTok Video*\n\n👤 Author: @${author}\n📝 ${title}`,
-      parse_mode: 'Markdown'
-    });
+    // Handle berdasarkan tipe konten
+    if (contentInfo.type === 'carousel') {
+      // CAROUSEL/SLIDESHOW - Kirim semua gambar
+      await bot.sendMessage(chatId, `🖼️ *TikTok Carousel*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n\n📊 ${formatStats(contentInfo.stats)}\n\n⬇️ Mengunduh ${contentInfo.images.length} gambar...`, {
+        parse_mode: 'Markdown'
+      });
+
+      // Kirim semua gambar satu per satu
+      for (let i = 0; i < contentInfo.images.length; i++) {
+        const image = contentInfo.images[i];
+        
+        try {
+          await bot.sendPhoto(chatId, image.url, {
+            caption: `🖼️ Gambar ${i + 1}/${contentInfo.images.length}`
+          });
+
+          // Delay untuk menghindari rate limit
+          if (i < contentInfo.images.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        } catch (error) {
+          console.error(`Error sending image ${i + 1}:`, error.message);
+        }
+      }
+
+      // Kirim musik jika tersedia
+      if (contentInfo.music && contentInfo.music.url) {
+        try {
+          await bot.sendMessage(chatId, '🎵 Sedang mengunduh musik...');
+          await bot.sendAudio(chatId, contentInfo.music.url, {
+            title: contentInfo.music.title,
+            performer: contentInfo.music.author,
+            caption: `🎵 ${contentInfo.music.title} - ${contentInfo.music.author}`
+          });
+        } catch (error) {
+          console.error('Error sending music:', error.message);
+          await bot.sendMessage(chatId, '⚠️ Musik tidak dapat diunduh');
+        }
+      }
+
+      console.log('✅ TikTok carousel sent successfully');
+
+    } else {
+      // VIDEO - Kirim video
+      const videoUrl = contentInfo.video.noWatermark || contentInfo.video.watermark;
+      
+      if (!videoUrl) {
+        await bot.sendMessage(chatId, '❌ URL video tidak ditemukan');
+        return;
+      }
+
+      const hasWatermark = !contentInfo.video.noWatermark;
+      const watermarkText = hasWatermark ? '⚠️ _Video dengan watermark_' : '✅ _Video tanpa watermark_';
+
+      await bot.sendMessage(chatId, '⬇️ Sedang mengunduh video...');
+
+      try {
+        // Download video dengan axios
+        const videoResponse = await axios.get(videoUrl, {
+          responseType: 'arraybuffer',
+          timeout: 120000, // 2 menit timeout
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': '*/*'
+          }
+        });
+
+        const videoBuffer = Buffer.from(videoResponse.data);
+
+        // Kirim video
+        await bot.sendVideo(chatId, videoBuffer, {
+          caption: `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${formatStats(contentInfo.stats)}\n\n${watermarkText}`,
+          parse_mode: 'Markdown',
+          supports_streaming: true
+        });
+
+        console.log('✅ TikTok video sent successfully');
+
+      } catch (videoError) {
+        console.error('Error downloading video:', videoError);
+
+        // Fallback: kirim sebagai URL jika download gagal
+        await bot.sendMessage(chatId, 
+          `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${formatStats(contentInfo.stats)}\n\n${watermarkText}\n\n⬇️ [Download Video](${videoUrl})`,
+          { 
+            parse_mode: 'Markdown',
+            disable_web_page_preview: false
+          }
+        );
+      }
+    }
 
   } catch (error) {
-    console.error('Error TikTok:', error.message);
-    bot.editMessageText('❌ Terjadi kesalahan saat mengunduh video TikTok. Silakan coba lagi.', {
+    console.error('Error TikTok:', error);
+
+    let errorMessage = '❌ Terjadi kesalahan saat memproses TikTok';
+
+    if (error.code === 'ECONNABORTED') {
+      errorMessage = '❌ Timeout: Video terlalu besar atau koneksi lambat. Coba lagi.';
+    } else if (error.response?.status === 404) {
+      errorMessage = '❌ Video tidak ditemukan. Link mungkin salah atau video sudah dihapus.';
+    } else if (error.response?.status === 403) {
+      errorMessage = '❌ Akses ditolak. Video mungkin di-private atau dibatasi.';
+    } else if (error.message?.includes('Invalid')) {
+      errorMessage = '❌ Format URL tidak valid. Pastikan menggunakan link TikTok yang benar.';
+    }
+
+    bot.editMessageText(errorMessage, {
       chat_id: chatId,
       message_id: processingMsg.message_id
+    }).catch(() => {
+      bot.sendMessage(chatId, errorMessage);
     });
   }
 });
+
+// ============================================
+// INSTAGRAM HANDLERS
+// ============================================
 
 // Handler Instagram Video
 async function handleInstagramVideo(chatId, responseData) {
@@ -781,12 +801,105 @@ bot.onText(/\/ig\s+(.+)/, async (msg, match) => {
   }
 });
 
-// Handler untuk pesan yang tidak dikenali - FIXED: Tambahkan /remini
+// ============================================
+// IMAGE COMMANDS
+// ============================================
+
+// Storage untuk menunggu gambar
+let waitingForImage = {};
+let waitingForRemini = {};
+
+// Command /start
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+});
+
+// Command /hitamkan
+bot.onText(/\/hitamkan/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  // CEK 1: Apakah ini reply ke gambar
+  if (msg.reply_to_message && msg.reply_to_message.photo) {
+    await processHitamkan(chatId, msg.reply_to_message);
+    return;
+  }
+
+  // CEK 2: Apakah pesan ini sendiri punya gambar (gambar dengan caption /hitamkan)
+  if (msg.photo && msg.photo.length > 0) {
+    await processHitamkan(chatId, msg);
+    return;
+  }
+
+  // CEK 3: Jika tidak ada gambar, set flag menunggu
+  waitingForImage[chatId] = true;
+  bot.sendMessage(chatId, '📸 Silakan kirim gambar yang ingin dihitamkan sekarang!');
+
+  // Auto-clear setelah 5 menit
+  setTimeout(() => {
+    if (waitingForImage[chatId]) {
+      delete waitingForImage[chatId];
+      bot.sendMessage(chatId, '⏱️ Waktu habis. Silakan ketik /hitamkan lagi jika masih ingin menghitamkan gambar.');
+    }
+  }, 5 * 60 * 1000);
+});
+
+// Command /remini
+bot.onText(/\/remini/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  // CEK 1: Apakah ini reply ke gambar
+  if (msg.reply_to_message && msg.reply_to_message.photo) {
+    await processRemini(chatId, msg.reply_to_message);
+    return;
+  }
+
+  // CEK 2: Apakah pesan ini sendiri punya gambar (gambar dengan caption /remini)
+  if (msg.photo && msg.photo.length > 0) {
+    await processRemini(chatId, msg);
+    return;
+  }
+
+  // CEK 3: Jika tidak ada gambar, set flag menunggu
+  waitingForRemini[chatId] = true;
+  bot.sendMessage(chatId, '✨ Silakan kirim gambar yang ingin ditingkatkan kualitasnya sekarang!\n\n_Remini AI akan meningkatkan resolusi dan detail gambar Anda_', {
+    parse_mode: 'Markdown'
+  });
+
+  // Auto-clear setelah 5 menit
+  setTimeout(() => {
+    if (waitingForRemini[chatId]) {
+      delete waitingForRemini[chatId];
+      bot.sendMessage(chatId, '⏱️ Waktu habis. Silakan ketik /remini lagi jika masih ingin meningkatkan kualitas gambar.');
+    }
+  }, 5 * 60 * 1000);
+});
+
+// Handler untuk menerima gambar
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+  const caption = msg.caption || '';
+
+  // Cek apakah sedang menunggu untuk /hitamkan
+  if (waitingForImage[chatId] && !caption.includes('/hitamkan') && !caption.includes('/remini')) {
+    delete waitingForImage[chatId];
+    await processHitamkan(chatId, msg);
+    return;
+  }
+
+  // Cek apakah sedang menunggu untuk /remini
+  if (waitingForRemini[chatId] && !caption.includes('/remini') && !caption.includes('/hitamkan')) {
+    delete waitingForRemini[chatId];
+    await processRemini(chatId, msg);
+    return;
+  }
+});
+
+// Handler untuk pesan yang tidak dikenali
 bot.on('message', (msg) => {
   const text = msg.text;
   
   if (text && text.startsWith('/')) {
-    // Tambahkan /remini ke dalam daftar command yang valid
     if (!text.match(/^\/(start|tiktok|t|ig|hitamkan|remini)\b/)) {
       bot.sendMessage(msg.chat.id, '❌ Command tidak dikenali. Ketik /start untuk melihat menu bantuan.');
     }
