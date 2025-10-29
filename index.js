@@ -103,7 +103,7 @@ const helpMessage = `
 • /ytshort <link> - Download YouTube Shorts
 • Kirim link Shorts langsung (otomatis terdeteksi)
 
-⚫ *Image to Black & White*
+⚫ *Yap menghitamkan gambar*
 • /hitamkan - Kirim gambar untuk dihitamkan
 • Reply gambar dengan /hitamkan
 
@@ -128,7 +128,6 @@ Kirim link langsung tanpa command!
 • YouTube: https://youtu.be/xxxxx (pilih format MP3/MP4)
 • YouTube Shorts: https://youtube.com/shorts/xxxxx
 
-⚡ *Rate Limit:* 5 request per 2 menit untuk mencegah spam
 
 _Bot by igimonsan mendukung video, foto, carousel, dan slideshow!_
 `;
