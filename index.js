@@ -1,10 +1,11 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const axios = require('axios');
 const TikTokDownloader = require('./handlers/tiktokdownloader');
 const InstagramHandler = require('./handlers/instagram');
 const HitamkanHandler = require('./handlers/hitamkan');
 const ReminiHandler = require('./handlers/remini');
+const YtMp3Handler = require('./handlers/ytmp3');
+const YtMp4Handler = require('./handlers/ytmp4');
 
 // Konfigurasi dari environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -18,17 +19,27 @@ if (!BOT_TOKEN || !FERDEV_API_KEY) {
 
 // Inisialisasi bot dan handlers
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-const tiktokDownloader = new TikTokDownloader();
+const tiktokDownloader = new TikTokDownloader(bot);
 const instagramHandler = new InstagramHandler(bot, FERDEV_API_KEY);
 const hitamkanHandler = new HitamkanHandler(bot, FERDEV_API_KEY, UPLOADER_URL);
 const reminiHandler = new ReminiHandler(bot, FERDEV_API_KEY, UPLOADER_URL);
+const ytMp3Handler = new YtMp3Handler(bot, FERDEV_API_KEY);
+const ytMp4Handler = new YtMp4Handler(bot, FERDEV_API_KEY);
 
-// Register handlers
+// Register semua handlers
+tiktokDownloader.register();
 instagramHandler.register();
 hitamkanHandler.register();
 reminiHandler.register();
+ytMp3Handler.register();
+ytMp4Handler.register();
 
 console.log('Bot Telegram berhasil dijalankan!');
+
+// ============================================
+// TEMPORARY STORAGE UNTUK YOUTUBE URLs
+// ============================================
+const youtubeUrlStorage = new Map(); // Format: messageId -> url
 
 // Pesan help menu
 const helpMessage = `
@@ -37,199 +48,211 @@ const helpMessage = `
 📱 *Fitur yang tersedia:*
 
 🎵 *TikTok Downloader*
-• /tiktok <url> - Download video/carousel TikTok
-• /t <url> - Shortcut untuk TikTok
+• /tiktok <link> - Download video/carousel TikTok
+• /t <link> - Shortcut untuk TikTok
+• Kirim link TikTok langsung (otomatis terdeteksi)
 
 📸 *Instagram Downloader*
-• /ig <url> - Download video/foto/carousel Instagram
+• /ig <link> - Download video/foto/carousel Instagram
+• Kirim link Instagram langsung (otomatis terdeteksi)
+
+🎧 *YouTube MP3 Downloader*
+• /ytmp3 <link> - Download audio dari YouTube
+• Format: MP3 berkualitas tinggi
+
+🎬 *YouTube MP4 Downloader*
+• /ytmp4 <link> - Download video dari YouTube
+• Format: MP4 berkualitas tinggi
 
 ⚫ *Image to Black & White*
 • /hitamkan - Kirim gambar untuk dihitamkan
 • Reply gambar dengan /hitamkan
-• Kirim gambar dengan caption /hitamkan
 
 ✨ *Image Enhancer (Remini)*
 • /remini - Tingkatkan kualitas gambar
 • Reply gambar dengan /remini
-• Kirim gambar dengan caption /remini
 
 💡 *Contoh penggunaan:*
 \`/tiktok https://vt.tiktok.com/xxxxx\`
 \`/t https://www.tiktok.com/@user/video/xxxxx\`
 \`/ig https://www.instagram.com/p/xxxxx\`
+\`/ytmp3 https://youtu.be/xxxxx\`
+\`/ytmp4 https://youtu.be/xxxxx\`
 \`/hitamkan\` (lalu kirim gambar)
 \`/remini\` (lalu kirim gambar)
 
-_Bot ini mendukung video, foto, carousel, dan slideshow!_
+📥 *Auto Download:*
+Kirim link langsung tanpa command!
+• TikTok: https://vt.tiktok.com/xxxxx
+• Instagram: https://www.instagram.com/p/xxxxx
+• YouTube: https://youtu.be/xxxxx (pilih format MP3/MP4)
+
+_Bot by igimonsan mendukung video, foto, carousel, dan slideshow!_
 `;
 
 // ============================================
-// HELPER FUNCTIONS
+// REGEX PATTERNS UNTUK DETECT LINKS
 // ============================================
-
-// Helper function untuk format stats
-function formatStats(stats) {
-  if (!stats) return '';
-  
-  const formatNumber = (num) => {
-    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-    return num.toString();
-  };
-
-  return `👁️ ${formatNumber(stats.views)} • ❤️ ${formatNumber(stats.likes)} • 💬 ${formatNumber(stats.comments)} • 🔄 ${formatNumber(stats.shares)}`;
-}
+const TIKTOK_REGEX = /(?:https?:\/\/)?(?:www\.|vm\.|vt\.)?tiktok\.com\/(?:@[\w.-]+\/video\/|t\/|v\/)?[\w.-]+/gi;
+const INSTAGRAM_REGEX = /(?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:p|reel|tv)\/[\w-]+\/?/gi;
+const YOUTUBE_REGEX = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|v\/)|youtu\.be\/)[\w-]+(?:\?[^\s]*)?/gi;
 
 // ============================================
-// TIKTOK HANDLER
+// DIRECT LINK HANDLER
 // ============================================
+bot.on('text', async (msg) => {
+  // Skip jika pesan adalah command
+  if (msg.text.startsWith('/')) {
+    return;
+  }
 
-// Command /tiktok atau /t
-bot.onText(/\/(tiktok|t)\s+(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const url = match[2].trim();
+  const text = msg.text;
 
-  if (!url) {
-    bot.sendMessage(chatId, '❌ Mohon masukkan URL TikTok!\n\nContoh:\n/tiktok https://vt.tiktok.com/xxxxx\n/t https://www.tiktok.com/@user/video/xxxxx\n/t https://vm.tiktok.com/xxxxx');
-    return;
-  }
-
-  // Validasi apakah URL mengandung domain TikTok
-  if (!url.match(/tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com/i)) {
-    bot.sendMessage(chatId, '❌ URL tidak valid! Pastikan ini adalah link TikTok yang benar.');
-    return;
-  }
-
-  const processingMsg = await bot.sendMessage(chatId, '⏳ Sedang memproses konten TikTok...');
-
-  try {
-    // Gunakan class TikTokDownloader untuk mendapatkan info konten
-    const contentInfo = await tiktokDownloader.downloadContent(url);
-
-    if (!contentInfo.success) {
-      bot.editMessageText(`❌ ${contentInfo.error || 'Gagal mengunduh konten TikTok'}\n\nPastikan:\n• Link masih aktif\n• Video tidak di-private\n• Format URL benar`, {
-        chat_id: chatId,
-        message_id: processingMsg.message_id
-      });
-      return;
-    }
-
-    // Hapus pesan processing
-    await bot.deleteMessage(chatId, processingMsg.message_id);
-
-    // Handle berdasarkan tipe konten
-    if (contentInfo.type === 'carousel') {
-      // CAROUSEL/SLIDESHOW - Kirim semua gambar
-      await bot.sendMessage(chatId, `🖼️ *TikTok Carousel*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n\n📊 ${formatStats(contentInfo.stats)}\n\n⬇️ Mengunduh ${contentInfo.images.length} gambar...`, {
-        parse_mode: 'Markdown'
-      });
-
-      // Kirim semua gambar satu per satu
-      for (let i = 0; i < contentInfo.images.length; i++) {
-        const image = contentInfo.images[i];
-        
-        try {
-          await bot.sendPhoto(chatId, image.url, {
-            caption: `🖼️ Gambar ${i + 1}/${contentInfo.images.length}`
-          });
-
-          // Delay untuk menghindari rate limit
-          if (i < contentInfo.images.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        } catch (error) {
-          console.error(`Error sending image ${i + 1}:`, error.message);
-        }
-      }
-
-      // Kirim musik jika tersedia
-      if (contentInfo.music && contentInfo.music.url) {
-        try {
-          await bot.sendMessage(chatId, '🎵 Sedang mengunduh musik...');
-          await bot.sendAudio(chatId, contentInfo.music.url, {
-            title: contentInfo.music.title,
-            performer: contentInfo.music.author,
-            caption: `🎵 ${contentInfo.music.title} - ${contentInfo.music.author}`
-          });
-        } catch (error) {
-          console.error('Error sending music:', error.message);
-          await bot.sendMessage(chatId, '⚠️ Musik tidak dapat diunduh');
-        }
-      }
-
-      console.log('✅ TikTok carousel sent successfully');
-
-    } else {
-      // VIDEO - Kirim video
-      const videoUrl = contentInfo.video.noWatermark || contentInfo.video.watermark;
+  // Cek apakah ada link TikTok
+  const tiktokMatches = text.match(TIKTOK_REGEX);
+  if (tiktokMatches && tiktokMatches.length > 0) {
+    for (const url of tiktokMatches) {
+      console.log(`🎵 Auto-detected TikTok link: ${url}`);
+      await tiktokDownloader.processTikTok(chatId, url.trim());
       
-      if (!videoUrl) {
-        await bot.sendMessage(chatId, '❌ URL video tidak ditemukan');
-        return;
+      // Delay jika ada multiple links
+      if (tiktokMatches.length > 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
+    }
+    return; // Stop processing setelah handle TikTok
+  }
 
-      const hasWatermark = !contentInfo.video.noWatermark;
-      const watermarkText = hasWatermark ? '⚠️ _Video dengan watermark_' : '✅ _Video tanpa watermark_';
+  // Cek apakah ada link Instagram
+  const instagramMatches = text.match(INSTAGRAM_REGEX);
+  if (instagramMatches && instagramMatches.length > 0) {
+    for (const url of instagramMatches) {
+      console.log(`📸 Auto-detected Instagram link: ${url}`);
+      
+      // Buat match object untuk compatibility dengan handleCommand
+      const match = [null, url.trim()];
+      await instagramHandler.handleCommand(msg, match);
+      
+      // Delay jika ada multiple links
+      if (instagramMatches.length > 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    return; // Stop processing setelah handle Instagram
+  }
 
-      await bot.sendMessage(chatId, '⬇️ Sedang mengunduh video...');
-
-      try {
-        // Download video dengan axios
-        const videoResponse = await axios.get(videoUrl, {
-          responseType: 'arraybuffer',
-          timeout: 120000, // 2 menit timeout
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': '*/*'
-          }
-        });
-
-        const videoBuffer = Buffer.from(videoResponse.data);
-
-        // Kirim video
-        await bot.sendVideo(chatId, videoBuffer, {
-          caption: `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${formatStats(contentInfo.stats)}\n\n${watermarkText}`,
+  // Cek apakah ada link YouTube
+  const youtubeMatches = text.match(YOUTUBE_REGEX);
+  if (youtubeMatches && youtubeMatches.length > 0) {
+    for (const url of youtubeMatches) {
+      const cleanUrl = url.trim();
+      console.log(`🎬 Auto-detected YouTube link: ${cleanUrl}`);
+      
+      // Kirim pesan dengan pilihan format
+      const sentMessage = await bot.sendMessage(
+        chatId,
+        `🎬 *Link YouTube terdeteksi!*\n\nPilih format yang ingin didownload:`,
+        {
           parse_mode: 'Markdown',
-          supports_streaming: true
-        });
-
-        console.log('✅ TikTok video sent successfully');
-
-      } catch (videoError) {
-        console.error('Error downloading video:', videoError);
-
-        // Fallback: kirim sebagai URL jika download gagal
-        await bot.sendMessage(chatId, 
-          `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${formatStats(contentInfo.stats)}\n\n${watermarkText}`,
-          { 
-            parse_mode: 'Markdown',
-            disable_web_page_preview: false
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '🎧 MP3 (Audio)', callback_data: 'ytmp3:temp' },
+                { text: '🎬 MP4 (Video)', callback_data: 'ytmp4:temp' }
+              ]
+            ]
           }
-        );
+        }
+      );
+      
+      // Simpan URL dengan message ID sebagai key
+      youtubeUrlStorage.set(sentMessage.message_id, cleanUrl);
+      
+      // Auto-cleanup setelah 5 menit
+      setTimeout(() => {
+        youtubeUrlStorage.delete(sentMessage.message_id);
+      }, 5 * 60 * 1000);
+      
+      // Delay jika ada multiple links
+      if (youtubeMatches.length > 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
+    return; // Stop processing setelah handle YouTube
+  }
+});
 
-  } catch (error) {
-    console.error('Error TikTok:', error);
+// ============================================
+// CALLBACK QUERY HANDLER (untuk button YouTube)
+// ============================================
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
+  const data = query.data;
 
-    let errorMessage = '❌ Terjadi kesalahan saat memproses TikTok';
+  // Answer callback query untuk menghilangkan loading
+  await bot.answerCallbackQuery(query.id);
 
-    if (error.code === 'ECONNABORTED') {
-      errorMessage = '❌ Timeout: Video terlalu besar atau koneksi lambat. Coba lagi.';
-    } else if (error.response?.status === 404) {
-      errorMessage = '❌ Video tidak ditemukan. Link mungkin salah atau video sudah dihapus.';
-    } else if (error.response?.status === 403) {
-      errorMessage = '❌ Akses ditolak. Video mungkin di-private atau dibatasi.';
-    } else if (error.message?.includes('Invalid')) {
-      errorMessage = '❌ Format URL tidak valid. Pastikan menggunakan link TikTok yang benar.';
-    }
+  // Ambil URL dari storage
+  const url = youtubeUrlStorage.get(messageId);
+  
+  if (!url) {
+    await bot.editMessageText(
+      '❌ *Link sudah expired!*\n\nSilakan kirim link YouTube lagi.',
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown'
+      }
+    );
+    return;
+  }
 
-    bot.editMessageText(errorMessage, {
-      chat_id: chatId,
-      message_id: processingMsg.message_id
-    }).catch(() => {
-      bot.sendMessage(chatId, errorMessage);
-    });
+  // Parse callback data
+  if (data.startsWith('ytmp3:')) {
+    console.log(`🎧 User selected MP3 for: ${url}`);
+    
+    // Edit message untuk remove buttons
+    await bot.editMessageText(
+      '🎧 *Memproses MP3...*\n\nSilakan tunggu sebentar...',
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown'
+      }
+    );
+    
+    // Process MP3
+    await ytMp3Handler.processYtMp3(chatId, url);
+    
+    // Delete the selection message
+    await bot.deleteMessage(chatId, messageId);
+    
+    // Cleanup storage
+    youtubeUrlStorage.delete(messageId);
+    
+  } else if (data.startsWith('ytmp4:')) {
+    console.log(`🎬 User selected MP4 for: ${url}`);
+    
+    // Edit message untuk remove buttons
+    await bot.editMessageText(
+      '🎬 *Memproses MP4...*\n\nSilakan tunggu sebentar...',
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown'
+      }
+    );
+    
+    // Process MP4
+    await ytMp4Handler.processYtMp4(chatId, url);
+    
+    // Delete the selection message
+    await bot.deleteMessage(chatId, messageId);
+    
+    // Cleanup storage
+    youtubeUrlStorage.delete(messageId);
   }
 });
 
@@ -267,13 +290,22 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
-// Handler untuk pesan yang tidak dikenali
+// Command /help
+bot.onText(/\/help/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+});
+
+// Handler untuk command yang tidak dikenali
 bot.on('message', (msg) => {
   const text = msg.text;
   
   if (text && text.startsWith('/')) {
-    if (!text.match(/^\/(start|tiktok|t|ig|hitamkan|remini)\b/)) {
-      bot.sendMessage(msg.chat.id, '❌ Command tidak dikenali. Ketik /start untuk melihat menu bantuan.');
+    // Daftar command yang valid
+    const validCommands = /^\/(start|help|tiktok|t|ig|ytmp3|ytmp4|hitamkan|remini)\b/;
+    
+    if (!text.match(validCommands)) {
+      bot.sendMessage(msg.chat.id, '❌ Command tidak dikenali. Ketik /start atau /help untuk melihat menu bantuan.');
     }
   }
 });
@@ -281,4 +313,17 @@ bot.on('message', (msg) => {
 // Error handling
 bot.on('polling_error', (error) => {
   console.error('Polling error:', error.message);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Stopping bot...');
+  bot.stopPolling();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Stopping bot...');
+  bot.stopPolling();
+  process.exit(0);
 });

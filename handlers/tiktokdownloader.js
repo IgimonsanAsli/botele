@@ -4,13 +4,210 @@ const fs = require('fs-extra');
 const path = require('path');
 
 class TikTokDownloader {
-    constructor() {
+    constructor(bot) {
+        this.bot = bot;
         this.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br'
         };
+    }
+
+    // Register command handlers
+    register() {
+        this.bot.onText(/\/(tiktok|t)\s+(.+)/, (msg, match) => this.handleCommand(msg, match));
+    }
+
+    // Handler untuk command /tiktok atau /t
+    async handleCommand(msg, match) {
+        const chatId = msg.chat.id;
+        const url = match[2].trim();
+
+        if (!url) {
+            this.bot.sendMessage(chatId, '❌ Mohon masukkan URL TikTok!\n\nContoh:\n/tiktok https://vt.tiktok.com/xxxxx\n/t https://www.tiktok.com/@user/video/xxxxx\n/t https://vm.tiktok.com/xxxxx');
+            return;
+        }
+
+        // Validasi apakah URL mengandung domain TikTok
+        if (!url.match(/tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com/i)) {
+            this.bot.sendMessage(chatId, '❌ URL tidak valid! Pastikan ini adalah link TikTok yang benar.');
+            return;
+        }
+
+        await this.processTikTok(chatId, url);
+    }
+
+    // Method utama untuk memproses TikTok
+    async processTikTok(chatId, url) {
+        const processingMsg = await this.bot.sendMessage(chatId, '⏳ Sedang memproses konten TikTok...');
+
+        try {
+            // Gunakan method downloadContent untuk mendapatkan info konten
+            const contentInfo = await this.downloadContent(url);
+
+            if (!contentInfo.success) {
+                await this.bot.editMessageText(
+                    `❌ ${contentInfo.error || 'Gagal mengunduh konten TikTok'}\n\nPastikan:\n• Link masih aktif\n• Video tidak di-private\n• Format URL benar`,
+                    {
+                        chat_id: chatId,
+                        message_id: processingMsg.message_id
+                    }
+                );
+                return;
+            }
+
+            // Hapus pesan processing
+            await this.bot.deleteMessage(chatId, processingMsg.message_id);
+
+            // Handle berdasarkan tipe konten
+            if (contentInfo.type === 'carousel') {
+                await this.sendCarousel(chatId, contentInfo);
+            } else {
+                await this.sendVideo(chatId, contentInfo);
+            }
+
+        } catch (error) {
+            console.error('Error TikTok:', error);
+
+            let errorMessage = '❌ Terjadi kesalahan saat memproses TikTok';
+
+            if (error.code === 'ECONNABORTED') {
+                errorMessage = '❌ Timeout: Video terlalu besar atau koneksi lambat. Coba lagi.';
+            } else if (error.response?.status === 404) {
+                errorMessage = '❌ Video tidak ditemukan. Link mungkin salah atau video sudah dihapus.';
+            } else if (error.response?.status === 403) {
+                errorMessage = '❌ Akses ditolak. Video mungkin di-private atau dibatasi.';
+            } else if (error.message?.includes('Invalid')) {
+                errorMessage = '❌ Format URL tidak valid. Pastikan menggunakan link TikTok yang benar.';
+            }
+
+            this.bot.editMessageText(errorMessage, {
+                chat_id: chatId,
+                message_id: processingMsg.message_id
+            }).catch(() => {
+                this.bot.sendMessage(chatId, errorMessage);
+            });
+        }
+    }
+
+    // Method untuk mengirim carousel
+    async sendCarousel(chatId, contentInfo) {
+        try {
+            // Kirim info carousel
+            await this.bot.sendMessage(
+                chatId,
+                `🖼️ *TikTok Carousel*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n\n📊 ${this.formatStats(contentInfo.stats)}\n\n⬇️ Mengunduh ${contentInfo.images.length} gambar...`,
+                { parse_mode: 'Markdown' }
+            );
+
+            // Kirim semua gambar satu per satu
+            for (let i = 0; i < contentInfo.images.length; i++) {
+                const image = contentInfo.images[i];
+
+                try {
+                    await this.bot.sendPhoto(chatId, image.url, {
+                        caption: `🖼️ Gambar ${i + 1}/${contentInfo.images.length}`
+                    });
+
+                    // Delay untuk menghindari rate limit
+                    if (i < contentInfo.images.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                } catch (error) {
+                    console.error(`Error sending image ${i + 1}:`, error.message);
+                }
+            }
+
+            // Kirim musik jika tersedia
+            if (contentInfo.music && contentInfo.music.url) {
+                try {
+                    await this.bot.sendMessage(chatId, '🎵 Sedang mengunduh musik...');
+                    await this.bot.sendAudio(chatId, contentInfo.music.url, {
+                        title: contentInfo.music.title,
+                        performer: contentInfo.music.author,
+                        caption: `🎵 ${contentInfo.music.title} - ${contentInfo.music.author}`
+                    });
+                } catch (error) {
+                    console.error('Error sending music:', error.message);
+                    await this.bot.sendMessage(chatId, '⚠️ Musik tidak dapat diunduh');
+                }
+            }
+
+            console.log('✅ TikTok carousel sent successfully');
+        } catch (error) {
+            console.error('Error sending carousel:', error);
+            throw error;
+        }
+    }
+
+    // Method untuk mengirim video
+    async sendVideo(chatId, contentInfo) {
+        try {
+            const videoUrl = contentInfo.video.noWatermark || contentInfo.video.watermark;
+
+            if (!videoUrl) {
+                await this.bot.sendMessage(chatId, '❌ URL video tidak ditemukan');
+                return;
+            }
+
+            const hasWatermark = !contentInfo.video.noWatermark;
+            const watermarkText = hasWatermark ? '⚠️ _Video dengan watermark_' : '✅ _Video tanpa watermark_';
+
+            await this.bot.sendMessage(chatId, '⬇️ Sedang mengunduh video...');
+
+            try {
+                // Download video dengan axios
+                const videoResponse = await axios.get(videoUrl, {
+                    responseType: 'arraybuffer',
+                    timeout: 120000, // 2 menit timeout
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': '*/*'
+                    }
+                });
+
+                const videoBuffer = Buffer.from(videoResponse.data);
+
+                // Kirim video
+                await this.bot.sendVideo(chatId, videoBuffer, {
+                    caption: `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${this.formatStats(contentInfo.stats)}\n\n${watermarkText}`,
+                    parse_mode: 'Markdown',
+                    supports_streaming: true
+                });
+
+                console.log('✅ TikTok video sent successfully');
+
+            } catch (videoError) {
+                console.error('Error downloading video:', videoError);
+
+                // Fallback: kirim sebagai URL jika download gagal
+                await this.bot.sendMessage(
+                    chatId,
+                    `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${this.formatStats(contentInfo.stats)}\n\n${watermarkText}\n\n🔗 [Download Video](${videoUrl})`,
+                    {
+                        parse_mode: 'Markdown',
+                        disable_web_page_preview: false
+                    }
+                );
+            }
+        } catch (error) {
+            console.error('Error sending video:', error);
+            throw error;
+        }
+    }
+
+    // Helper untuk format stats
+    formatStats(stats) {
+        if (!stats) return '';
+
+        const formatNumber = (num) => {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toString();
+        };
+
+        return `👁️ ${formatNumber(stats.views)} • ❤️ ${formatNumber(stats.likes)} • 💬 ${formatNumber(stats.comments)} • 🔄 ${formatNumber(stats.shares)}`;
     }
 
     // Method untuk mengekstrak video ID dari URL
@@ -52,7 +249,7 @@ class TikTokDownloader {
 
             // Gunakan tikwm API
             const result = await this.downloadWithTikwm(url);
-            
+
             if (result.success) {
                 return result;
             }
@@ -73,7 +270,7 @@ class TikTokDownloader {
     async downloadWithTikwm(url) {
         try {
             const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`;
-            
+
             const response = await axios.get(apiUrl, {
                 headers: this.headers,
                 timeout: 15000
@@ -83,7 +280,7 @@ class TikTokDownloader {
 
             if (response.data && response.data.code === 0) {
                 const data = response.data.data;
-                
+
                 // Cek apakah ini carousel (image slideshow)
                 if (data.images && data.images.length > 0) {
                     return {
@@ -113,7 +310,7 @@ class TikTokDownloader {
                         },
                         create_time: data.create_time || null
                     };
-                } 
+                }
                 // Video biasa
                 else if (data.play) {
                     return {
@@ -128,7 +325,6 @@ class TikTokDownloader {
                         video: {
                             noWatermark: data.play || null,
                             watermark: data.wmplay || null,
-                            // cover: data.cover || null,  // REMOVED: Tidak menyertakan URL cover/thumbnail
                             duration: data.duration || 0
                         },
                         music: {
@@ -160,7 +356,7 @@ class TikTokDownloader {
     async fallbackDownload(url) {
         try {
             const apiUrl = `https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(url)}`;
-            
+
             const response = await axios.get(apiUrl, {
                 headers: this.headers,
                 timeout: 15000
@@ -179,7 +375,6 @@ class TikTokDownloader {
                     video: {
                         noWatermark: response.data.video.noWatermark,
                         watermark: response.data.video.watermark,
-                        // cover: response.data.images?.[0] || null,  // REMOVED: Tidak menyertakan cover dari fallback API
                         duration: 0
                     },
                     music: {
@@ -221,10 +416,10 @@ class TikTokDownloader {
             });
 
             // Buat folder berdasarkan kategori dan subfolder
-            const folderPath = subfolder ? 
-                path.join('./downloads', category, subfolder) : 
+            const folderPath = subfolder ?
+                path.join('./downloads', category, subfolder) :
                 path.join('./downloads', category);
-            
+
             await fs.ensureDir(folderPath);
 
             const filePath = path.join(folderPath, fileName);
@@ -258,7 +453,7 @@ class TikTokDownloader {
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
             const authorName = this.sanitizeFileName(contentInfo.author.username);
             const titleName = this.sanitizeFileName(contentInfo.title);
-            
+
             const carouselFolder = `${authorName}_${titleName}_${timestamp}`;
             const results = {
                 success: true,
@@ -279,18 +474,18 @@ class TikTokDownloader {
                 try {
                     const imageFileName = `image_${String(image.index).padStart(2, '0')}.jpg`;
                     const imagePath = await this.downloadFile(
-                        image.url, 
-                        imageFileName, 
-                        category, 
+                        image.url,
+                        imageFileName,
+                        category,
                         carouselFolder
                     );
-                    
+
                     results.files.images.push({
                         index: image.index,
                         fileName: imageFileName,
                         path: imagePath
                     });
-                    
+
                     console.log(`✓ Downloaded image ${image.index}: ${imageFileName}`);
                 } catch (error) {
                     console.error(`✗ Failed to download image ${image.index}:`, error.message);
@@ -302,17 +497,17 @@ class TikTokDownloader {
                 try {
                     const musicFileName = `${this.sanitizeFileName(contentInfo.music.title)}_${this.sanitizeFileName(contentInfo.music.author)}.mp3`;
                     const musicPath = await this.downloadFile(
-                        contentInfo.music.url, 
-                        musicFileName, 
-                        category, 
+                        contentInfo.music.url,
+                        musicFileName,
+                        category,
                         carouselFolder
                     );
-                    
+
                     results.files.music = {
                         fileName: musicFileName,
                         path: musicPath
                     };
-                    
+
                     console.log(`✓ Downloaded music: ${musicFileName}`);
                 } catch (error) {
                     console.error('✗ Failed to download music:', error.message);
@@ -323,7 +518,7 @@ class TikTokDownloader {
             const infoFileName = 'info.json';
             const infoPath = path.join('./downloads', category, carouselFolder, infoFileName);
             await fs.writeJSON(infoPath, contentInfo, { spaces: 2 });
-            
+
             results.files.info = {
                 fileName: infoFileName,
                 path: infoPath
@@ -342,13 +537,13 @@ class TikTokDownloader {
         }
     }
 
-    // Method untuk download video lengkap (TANPA THUMBNAIL)
+    // Method untuk download video lengkap
     async downloadVideo(contentInfo, category) {
         try {
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
             const authorName = this.sanitizeFileName(contentInfo.author.username);
             const titleName = this.sanitizeFileName(contentInfo.title);
-            
+
             const videoFolder = `${authorName}_${titleName}_${timestamp}`;
             const results = {
                 success: true,
@@ -356,7 +551,6 @@ class TikTokDownloader {
                 folder: videoFolder,
                 files: {
                     video: null,
-                    // cover: null,  // REMOVED: Tidak ada field cover di hasil
                     music: null,
                     info: null
                 },
@@ -371,64 +565,40 @@ class TikTokDownloader {
                 try {
                     const videoFileName = `${titleName}.mp4`;
                     const videoPath = await this.downloadFile(
-                        videoUrl, 
-                        videoFileName, 
-                        category, 
+                        videoUrl,
+                        videoFileName,
+                        category,
                         videoFolder
                     );
-                    
+
                     results.files.video = {
                         fileName: videoFileName,
                         path: videoPath,
                         hasWatermark: !contentInfo.video.noWatermark
                     };
-                    
+
                     console.log(`✓ Downloaded video: ${videoFileName}`);
                 } catch (error) {
                     console.error('✗ Failed to download video:', error.message);
                 }
             }
 
-            // REMOVED: Bagian download cover/thumbnail dihapus sepenuhnya
-            /*
-            if (contentInfo.video.cover) {
-                try {
-                    const coverFileName = `${titleName}_cover.jpg`;
-                    const coverPath = await this.downloadFile(
-                        contentInfo.video.cover, 
-                        coverFileName, 
-                        category, 
-                        videoFolder
-                    );
-                    
-                    results.files.cover = {
-                        fileName: coverFileName,
-                        path: coverPath
-                    };
-                    
-                    console.log(`✓ Downloaded cover: ${coverFileName}`);
-                } catch (error) {
-                    console.error('✗ Failed to download cover:', error.message);
-                }
-            }
-            */
-
             // Download musik jika tersedia
             if (contentInfo.music && contentInfo.music.url) {
                 try {
                     const musicFileName = `${this.sanitizeFileName(contentInfo.music.title)}_${this.sanitizeFileName(contentInfo.music.author)}.mp3`;
                     const musicPath = await this.downloadFile(
-                        contentInfo.music.url, 
-                        musicFileName, 
-                        category, 
+                        contentInfo.music.url,
+                        musicFileName,
+                        category,
                         videoFolder
                     );
-                    
+
                     results.files.music = {
                         fileName: musicFileName,
                         path: musicPath
                     };
-                    
+
                     console.log(`✓ Downloaded music: ${musicFileName}`);
                 } catch (error) {
                     console.error('✗ Failed to download music:', error.message);
@@ -439,7 +609,7 @@ class TikTokDownloader {
             const infoFileName = 'info.json';
             const infoPath = path.join('./downloads', category, videoFolder, infoFileName);
             await fs.writeJSON(infoPath, contentInfo, { spaces: 2 });
-            
+
             results.files.info = {
                 fileName: infoFileName,
                 path: infoPath
@@ -465,10 +635,10 @@ class TikTokDownloader {
             console.log('🚀 Starting TikTok download process...');
             console.log('URL:', url);
             console.log('='.repeat(50));
-            
+
             // Dapatkan informasi konten
             const contentInfo = await this.downloadContent(url);
-            
+
             if (!contentInfo.success) {
                 return {
                     success: false,
@@ -479,7 +649,7 @@ class TikTokDownloader {
             console.log(`📱 Content Type: ${contentInfo.type.toUpperCase()}`);
             console.log(`👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})`);
             console.log(`📝 Title: ${contentInfo.title}`);
-            
+
             if (contentInfo.type === 'carousel') {
                 console.log(`🖼️  Images: ${contentInfo.images.length} items`);
                 console.log(`🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}`);
@@ -502,13 +672,13 @@ class TikTokDownloader {
     // Method untuk menampilkan statistik konten
     displayStats(contentInfo) {
         if (!contentInfo.stats) return;
-        
+
         console.log('\n📊 Content Statistics:');
         console.log(`   Views: ${this.formatNumber(contentInfo.stats.views)}`);
         console.log(`   Likes: ${this.formatNumber(contentInfo.stats.likes)}`);
         console.log(`   Comments: ${this.formatNumber(contentInfo.stats.comments)}`);
         console.log(`   Shares: ${this.formatNumber(contentInfo.stats.shares)}`);
-        
+
         if (contentInfo.create_time) {
             console.log(`   Created: ${new Date(contentInfo.create_time * 1000).toLocaleDateString()}`);
         }
