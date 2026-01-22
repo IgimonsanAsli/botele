@@ -1,7 +1,4 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
-const fs = require('fs-extra');
-const path = require('path');
 
 class TikTokDownloader {
     constructor(bot) {
@@ -25,13 +22,26 @@ class TikTokDownloader {
         const url = match[2].trim();
 
         if (!url) {
-            this.bot.sendMessage(chatId, '❌ Mohon masukkan URL TikTok!\n\nContoh:\n/tiktok https://vt.tiktok.com/xxxxx\n/t https://www.tiktok.com/@user/video/xxxxx\n/t https://vm.tiktok.com/xxxxx');
+            this.bot.sendMessage(
+                chatId,
+                '❌ <b>Cara penggunaan:</b>\n\n' +
+                '<code>/tiktok &lt;link_tiktok&gt;</code>\n' +
+                '<code>/t &lt;link_tiktok&gt;</code>\n\n' +
+                '<b>Contoh:</b>\n' +
+                '<code>/tiktok https://vt.tiktok.com/xxxxx</code>\n' +
+                '<code>/t https://vm.tiktok.com/xxxxx</code>',
+                { parse_mode: 'HTML' }
+            );
             return;
         }
 
         // Validasi apakah URL mengandung domain TikTok
         if (!url.match(/tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com/i)) {
-            this.bot.sendMessage(chatId, '❌ URL tidak valid! Pastikan ini adalah link TikTok yang benar.');
+            this.bot.sendMessage(
+                chatId,
+                '❌ <b>URL tidak valid!</b>\n\nPastikan ini adalah link TikTok yang benar.',
+                { parse_mode: 'HTML' }
+            );
             return;
         }
 
@@ -40,65 +50,93 @@ class TikTokDownloader {
 
     // Method utama untuk memproses TikTok
     async processTikTok(chatId, url) {
-        const processingMsg = await this.bot.sendMessage(chatId, '⏳ Sedang memproses konten TikTok...');
+        let statusMsg;
 
         try {
+            statusMsg = await this.bot.sendMessage(chatId, '⏳ Memproses konten TikTok...');
+
             // Gunakan method downloadContent untuk mendapatkan info konten
             const contentInfo = await this.downloadContent(url);
 
             if (!contentInfo.success) {
                 await this.bot.editMessageText(
-                    `❌ ${contentInfo.error || 'Gagal mengunduh konten TikTok'}\n\nPastikan:\n• Link masih aktif\n• Video tidak di-private\n• Format URL benar`,
+                    `❌ <b>${contentInfo.error || 'Gagal mengunduh konten TikTok'}</b>\n\n` +
+                    '<b>Pastikan:</b>\n' +
+                    '• Link masih aktif\n' +
+                    '• Video tidak di-private\n' +
+                    '• Format URL benar',
                     {
                         chat_id: chatId,
-                        message_id: processingMsg.message_id
+                        message_id: statusMsg.message_id,
+                        parse_mode: 'HTML'
                     }
                 );
                 return;
             }
 
-            // Hapus pesan processing
-            await this.bot.deleteMessage(chatId, processingMsg.message_id);
+            // Update status
+            await this.bot.editMessageText(
+                '📥 Mendownload konten...',
+                {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id
+                }
+            );
 
             // Handle berdasarkan tipe konten
             if (contentInfo.type === 'carousel') {
-                await this.sendCarousel(chatId, contentInfo);
+                await this.sendCarousel(chatId, contentInfo, statusMsg);
             } else {
-                await this.sendVideo(chatId, contentInfo);
+                await this.sendVideo(chatId, contentInfo, statusMsg);
             }
 
         } catch (error) {
             console.error('Error TikTok:', error);
 
-            let errorMessage = '❌ Terjadi kesalahan saat memproses TikTok';
+            let errorMessage = '❌ <b>Terjadi kesalahan saat memproses TikTok</b>\n\n';
 
             if (error.code === 'ECONNABORTED') {
-                errorMessage = '❌ Timeout: Video terlalu besar atau koneksi lambat. Coba lagi.';
+                errorMessage += '⏱️ Timeout: Konten terlalu besar atau koneksi lambat. Coba lagi.';
             } else if (error.response?.status === 404) {
-                errorMessage = '❌ Video tidak ditemukan. Link mungkin salah atau video sudah dihapus.';
+                errorMessage += '🔍 Video tidak ditemukan. Link mungkin salah atau video sudah dihapus.';
             } else if (error.response?.status === 403) {
-                errorMessage = '❌ Akses ditolak. Video mungkin di-private atau dibatasi.';
+                errorMessage += '🚫 Akses ditolak. Video mungkin di-private atau dibatasi.';
             } else if (error.message?.includes('Invalid')) {
-                errorMessage = '❌ Format URL tidak valid. Pastikan menggunakan link TikTok yang benar.';
+                errorMessage += '⚠️ Format URL tidak valid. Pastikan menggunakan link TikTok yang benar.';
+            } else {
+                errorMessage += `⚠️ ${this.escapeHtml(error.message)}`;
             }
 
-            this.bot.editMessageText(errorMessage, {
-                chat_id: chatId,
-                message_id: processingMsg.message_id
-            }).catch(() => {
-                this.bot.sendMessage(chatId, errorMessage);
-            });
+            if (statusMsg) {
+                this.bot.editMessageText(errorMessage, {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    parse_mode: 'HTML'
+                }).catch(() => {
+                    this.bot.sendMessage(chatId, errorMessage, { parse_mode: 'HTML' });
+                });
+            } else {
+                this.bot.sendMessage(chatId, errorMessage, { parse_mode: 'HTML' });
+            }
         }
     }
 
     // Method untuk mengirim carousel
-    async sendCarousel(chatId, contentInfo) {
+    async sendCarousel(chatId, contentInfo, statusMsg) {
         try {
+            // Hapus status message
+            await this.bot.deleteMessage(chatId, statusMsg.message_id);
+
             // Kirim info carousel
             await this.bot.sendMessage(
                 chatId,
-                `🖼️ *TikTok Carousel*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n\n📊 ${this.formatStats(contentInfo.stats)}\n\n⬇️ Mengunduh ${contentInfo.images.length} gambar...`,
-                { parse_mode: 'Markdown' }
+                `🖼️ <b>TikTok Carousel</b>\n\n` +
+                `👤 <b>Author:</b> ${this.escapeHtml(contentInfo.author.nickname)} (@${this.escapeHtml(contentInfo.author.username)})\n` +
+                `📝 ${this.escapeHtml(contentInfo.title)}\n` +
+                `🎵 <b>Music:</b> ${this.escapeHtml(contentInfo.music.title)} - ${this.escapeHtml(contentInfo.music.author)}\n\n` +
+                `📊 ${this.formatStats(contentInfo.stats)}\n\n` +
+                `⬇️ Mengunduh ${contentInfo.images.length} gambar...`,
+                { parse_mode: 'HTML' }
             );
 
             // Kirim semua gambar satu per satu
@@ -126,7 +164,7 @@ class TikTokDownloader {
                     await this.bot.sendAudio(chatId, contentInfo.music.url, {
                         title: contentInfo.music.title,
                         performer: contentInfo.music.author,
-                        caption: `🎵 ${contentInfo.music.title} - ${contentInfo.music.author}`
+                        caption: `🎵 ${this.escapeHtml(contentInfo.music.title)} - ${this.escapeHtml(contentInfo.music.author)}`
                     });
                 } catch (error) {
                     console.error('Error sending music:', error.message);
@@ -141,56 +179,150 @@ class TikTokDownloader {
         }
     }
 
-    // Method untuk mengirim video
-    async sendVideo(chatId, contentInfo) {
+    // Method untuk mengirim video dengan progress tracker
+    async sendVideo(chatId, contentInfo, statusMsg) {
         try {
             const videoUrl = contentInfo.video.noWatermark || contentInfo.video.watermark;
 
             if (!videoUrl) {
-                await this.bot.sendMessage(chatId, '❌ URL video tidak ditemukan');
+                await this.bot.editMessageText(
+                    '❌ <b>URL video tidak ditemukan</b>',
+                    {
+                        chat_id: chatId,
+                        message_id: statusMsg.message_id,
+                        parse_mode: 'HTML'
+                    }
+                );
                 return;
             }
 
             const hasWatermark = !contentInfo.video.noWatermark;
-            const watermarkText = hasWatermark ? '⚠️ _Video dengan watermark_' : '✅ _Video tanpa watermark_';
+            const watermarkText = hasWatermark ? '⚠️ <i>Video dengan watermark</i>' : '✅ <i>Video tanpa watermark</i>';
 
-            await this.bot.sendMessage(chatId, '⬇️ Sedang mengunduh video...');
-
-            try {
-                // Download video dengan axios
-                const videoResponse = await axios.get(videoUrl, {
-                    responseType: 'arraybuffer',
-                    timeout: 120000, // 2 menit timeout
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': '*/*'
-                    }
-                });
-
-                const videoBuffer = Buffer.from(videoResponse.data);
-
-                // Kirim video
-                await this.bot.sendVideo(chatId, videoBuffer, {
-                    caption: `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${this.formatStats(contentInfo.stats)}\n\n${watermarkText}`,
-                    parse_mode: 'Markdown',
-                    supports_streaming: true
-                });
-
-                console.log('✅ TikTok video sent successfully');
-
-            } catch (videoError) {
-                console.error('Error downloading video:', videoError);
-
-                // Fallback: kirim sebagai URL jika download gagal
-                await this.bot.sendMessage(
-                    chatId,
-                    `🎵 *TikTok Video*\n\n👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})\n📝 ${contentInfo.title}\n🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}\n⏱️ Duration: ${contentInfo.video.duration}s\n\n📊 ${this.formatStats(contentInfo.stats)}\n\n${watermarkText}\n\n🔗 [Download Video](${videoUrl})`,
-                    {
-                        parse_mode: 'Markdown',
-                        disable_web_page_preview: false
-                    }
-                );
+            // Kirim thumbnail dengan info
+            let thumbnailMsg;
+            if (contentInfo.author.avatar) {
+                try {
+                    thumbnailMsg = await this.bot.sendPhoto(chatId, contentInfo.author.avatar, {
+                        caption:
+                            `🎵 <b>TikTok Video</b>\n\n` +
+                            `👤 <b>Author:</b> ${this.escapeHtml(contentInfo.author.nickname)} (@${this.escapeHtml(contentInfo.author.username)})\n` +
+                            `📝 ${this.escapeHtml(contentInfo.title)}\n` +
+                            `🎵 <b>Music:</b> ${this.escapeHtml(contentInfo.music.title)} - ${this.escapeHtml(contentInfo.music.author)}\n` +
+                            `⏱️ <b>Duration:</b> ${contentInfo.video.duration}s\n\n` +
+                            `📊 ${this.formatStats(contentInfo.stats)}\n\n` +
+                            `<i>Memulai download...</i>`,
+                        parse_mode: 'HTML'
+                    });
+                } catch (thumbError) {
+                    console.warn('Failed to send avatar:', thumbError.message);
+                }
             }
+
+            // Download video dengan streaming dan progress tracking
+            console.log(`📥 Downloading from: ${videoUrl}`);
+
+            const videoResponse = await axios.get(videoUrl, {
+                responseType: 'stream',
+                timeout: 180000, // 3 menit
+                maxContentLength: 52428800, // 50MB
+                maxBodyLength: 52428800,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': '*/*'
+                }
+            });
+
+            // Setup progress tracking
+            const contentLength = parseInt(videoResponse.headers['content-length'] || 0);
+            let downloadedBytes = 0;
+            let lastUpdateTime = Date.now();
+            const startTime = Date.now();
+            let isUpdating = false;
+
+            const updateInterval = 5000; // 5 detik
+            let lastPercentage = 0;
+
+            videoResponse.data.on('data', async (chunk) => {
+                downloadedBytes += chunk.length;
+                const now = Date.now();
+                const timeSinceLastUpdate = now - lastUpdateTime;
+                const percentage = contentLength > 0 ? Math.floor((downloadedBytes / contentLength) * 100) : 0;
+
+                const percentageDiff = percentage - lastPercentage;
+                const shouldUpdate = timeSinceLastUpdate >= updateInterval ||
+                    (percentageDiff >= 20 && timeSinceLastUpdate >= 3000);
+
+                if (thumbnailMsg && shouldUpdate && !isUpdating) {
+                    isUpdating = true;
+
+                    const elapsed = Math.floor((now - startTime) / 1000);
+                    const downloadedMB = (downloadedBytes / 1048576).toFixed(1);
+                    const totalMB = contentLength > 0 ? (contentLength / 1048576).toFixed(1) : '?';
+
+                    const avgSpeed = downloadedBytes / ((now - startTime) / 1000);
+                    const speedKB = (avgSpeed / 1024).toFixed(0);
+
+                    const progressEmoji = percentage < 25 ? '🔴' :
+                        percentage < 50 ? '🟠' :
+                            percentage < 75 ? '🟡' : '🟢';
+
+                    try {
+                        await this.bot.editMessageCaption(
+                            `🎵 <b>TikTok Video</b>\n\n` +
+                            `👤 <b>Author:</b> ${this.escapeHtml(contentInfo.author.nickname)} (@${this.escapeHtml(contentInfo.author.username)})\n` +
+                            `📝 ${this.escapeHtml(contentInfo.title)}\n` +
+                            `🎵 <b>Music:</b> ${this.escapeHtml(contentInfo.music.title)} - ${this.escapeHtml(contentInfo.music.author)}\n` +
+                            `⏱️ <b>Duration:</b> ${contentInfo.video.duration}s\n\n` +
+                            `${progressEmoji} <b>${percentage}%</b> • ${downloadedMB}/${totalMB} MB\n` +
+                            `⚡ ${speedKB} KB/s • ⏱️ ${Math.floor(elapsed / 60)}:${(elapsed % 60).toString().padStart(2, '0')}`,
+                            {
+                                chat_id: chatId,
+                                message_id: thumbnailMsg.message_id,
+                                parse_mode: 'HTML'
+                            }
+                        );
+                        lastUpdateTime = now;
+                        lastPercentage = percentage;
+                    } catch (editError) {
+                        if (editError.message && editError.message.includes('429')) {
+                            console.log('⏰ Rate limited, skipping update');
+                        }
+                    } finally {
+                        isUpdating = false;
+                    }
+                }
+            });
+
+            // Kirim video
+            const videoCaption =
+                `🎵 <b>TikTok Video</b>\n\n` +
+                `👤 <b>Author:</b> ${this.escapeHtml(contentInfo.author.nickname)} (@${this.escapeHtml(contentInfo.author.username)})\n` +
+                `📝 ${this.escapeHtml(contentInfo.title)}\n` +
+                `🎵 <b>Music:</b> ${this.escapeHtml(contentInfo.music.title)} - ${this.escapeHtml(contentInfo.music.author)}\n` +
+                `⏱️ <b>Duration:</b> ${contentInfo.video.duration}s\n\n` +
+                `📊 ${this.formatStats(contentInfo.stats)}\n\n` +
+                `${watermarkText}`;
+
+            await this.bot.sendVideo(
+                chatId,
+                videoResponse.data,
+                {
+                    caption: videoCaption,
+                    parse_mode: 'HTML',
+                    supports_streaming: true
+                },
+                {
+                    filename: `${this.sanitizeFilename(contentInfo.title)}.mp4`,
+                    contentType: 'video/mp4'
+                }
+            );
+
+            // Hapus status message
+            await this.bot.deleteMessage(chatId, statusMsg.message_id);
+
+            console.log('✅ TikTok video sent successfully');
+
         } catch (error) {
             console.error('Error sending video:', error);
             throw error;
@@ -201,13 +333,17 @@ class TikTokDownloader {
     formatStats(stats) {
         if (!stats) return '';
 
-        const formatNumber = (num) => {
-            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
-            return num.toString();
-        };
+        return `👁️ ${this.formatNumber(stats.views)} • ❤️ ${this.formatNumber(stats.likes)} • 💬 ${this.formatNumber(stats.comments)} • 🔄 ${this.formatNumber(stats.shares)}`;
+    }
 
-        return `👁️ ${formatNumber(stats.views)} • ❤️ ${formatNumber(stats.likes)} • 💬 ${formatNumber(stats.comments)} • 🔄 ${formatNumber(stats.shares)}`;
+    // Helper untuk format angka
+    formatNumber(num) {
+        if (num >= 1000000) {
+            return (num / 1000000).toFixed(1) + 'M';
+        } else if (num >= 1000) {
+            return (num / 1000).toFixed(1) + 'K';
+        }
+        return num.toString();
     }
 
     // Method untuk mengekstrak video ID dari URL
@@ -404,294 +540,22 @@ class TikTokDownloader {
         }
     }
 
-    // Method untuk download file (video, gambar, atau audio)
-    async downloadFile(fileUrl, fileName, category, subfolder = '') {
-        try {
-            const response = await axios({
-                method: 'GET',
-                url: fileUrl,
-                responseType: 'stream',
-                headers: this.headers,
-                timeout: 60000
-            });
-
-            // Buat folder berdasarkan kategori dan subfolder
-            const folderPath = subfolder ?
-                path.join('./downloads', category, subfolder) :
-                path.join('./downloads', category);
-
-            await fs.ensureDir(folderPath);
-
-            const filePath = path.join(folderPath, fileName);
-            const writer = fs.createWriteStream(filePath);
-
-            response.data.pipe(writer);
-
-            return new Promise((resolve, reject) => {
-                writer.on('finish', () => resolve(filePath));
-                writer.on('error', reject);
-            });
-
-        } catch (error) {
-            console.error('Error downloading file:', error);
-            throw error;
-        }
+    escapeHtml(text) {
+        if (!text) return 'N/A';
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
-    // Method untuk membersihkan nama file
-    sanitizeFileName(fileName) {
-        return fileName
-            .replace(/[^\w\s-]/g, '') // Hapus karakter khusus
-            .replace(/\s+/g, '_') // Ganti spasi dengan underscore
-            .replace(/_+/g, '_') // Hapus underscore berulang
-            .substring(0, 100); // Batasi panjang nama file
-    }
-
-    // Method untuk download carousel lengkap
-    async downloadCarousel(contentInfo, category) {
-        try {
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-            const authorName = this.sanitizeFileName(contentInfo.author.username);
-            const titleName = this.sanitizeFileName(contentInfo.title);
-
-            const carouselFolder = `${authorName}_${titleName}_${timestamp}`;
-            const results = {
-                success: true,
-                type: 'carousel',
-                folder: carouselFolder,
-                files: {
-                    images: [],
-                    music: null,
-                    info: null
-                },
-                info: contentInfo
-            };
-
-            console.log(`Downloading carousel to folder: ${carouselFolder}`);
-
-            // Download semua gambar
-            for (const image of contentInfo.images) {
-                try {
-                    const imageFileName = `image_${String(image.index).padStart(2, '0')}.jpg`;
-                    const imagePath = await this.downloadFile(
-                        image.url,
-                        imageFileName,
-                        category,
-                        carouselFolder
-                    );
-
-                    results.files.images.push({
-                        index: image.index,
-                        fileName: imageFileName,
-                        path: imagePath
-                    });
-
-                    console.log(`✓ Downloaded image ${image.index}: ${imageFileName}`);
-                } catch (error) {
-                    console.error(`✗ Failed to download image ${image.index}:`, error.message);
-                }
-            }
-
-            // Download musik jika tersedia
-            if (contentInfo.music && contentInfo.music.url) {
-                try {
-                    const musicFileName = `${this.sanitizeFileName(contentInfo.music.title)}_${this.sanitizeFileName(contentInfo.music.author)}.mp3`;
-                    const musicPath = await this.downloadFile(
-                        contentInfo.music.url,
-                        musicFileName,
-                        category,
-                        carouselFolder
-                    );
-
-                    results.files.music = {
-                        fileName: musicFileName,
-                        path: musicPath
-                    };
-
-                    console.log(`✓ Downloaded music: ${musicFileName}`);
-                } catch (error) {
-                    console.error('✗ Failed to download music:', error.message);
-                }
-            }
-
-            // Simpan informasi lengkap ke file JSON
-            const infoFileName = 'info.json';
-            const infoPath = path.join('./downloads', category, carouselFolder, infoFileName);
-            await fs.writeJSON(infoPath, contentInfo, { spaces: 2 });
-
-            results.files.info = {
-                fileName: infoFileName,
-                path: infoPath
-            };
-
-            console.log(`✓ Saved info: ${infoFileName}`);
-
-            return results;
-
-        } catch (error) {
-            console.error('Error downloading carousel:', error);
-            return {
-                success: false,
-                error: 'Terjadi kesalahan saat mendownload carousel'
-            };
-        }
-    }
-
-    // Method untuk download video lengkap
-    async downloadVideo(contentInfo, category) {
-        try {
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-            const authorName = this.sanitizeFileName(contentInfo.author.username);
-            const titleName = this.sanitizeFileName(contentInfo.title);
-
-            const videoFolder = `${authorName}_${titleName}_${timestamp}`;
-            const results = {
-                success: true,
-                type: 'video',
-                folder: videoFolder,
-                files: {
-                    video: null,
-                    music: null,
-                    info: null
-                },
-                info: contentInfo
-            };
-
-            console.log(`Downloading video to folder: ${videoFolder}`);
-
-            // Download video (prioritas tanpa watermark)
-            const videoUrl = contentInfo.video.noWatermark || contentInfo.video.watermark;
-            if (videoUrl) {
-                try {
-                    const videoFileName = `${titleName}.mp4`;
-                    const videoPath = await this.downloadFile(
-                        videoUrl,
-                        videoFileName,
-                        category,
-                        videoFolder
-                    );
-
-                    results.files.video = {
-                        fileName: videoFileName,
-                        path: videoPath,
-                        hasWatermark: !contentInfo.video.noWatermark
-                    };
-
-                    console.log(`✓ Downloaded video: ${videoFileName}`);
-                } catch (error) {
-                    console.error('✗ Failed to download video:', error.message);
-                }
-            }
-
-            // Download musik jika tersedia
-            if (contentInfo.music && contentInfo.music.url) {
-                try {
-                    const musicFileName = `${this.sanitizeFileName(contentInfo.music.title)}_${this.sanitizeFileName(contentInfo.music.author)}.mp3`;
-                    const musicPath = await this.downloadFile(
-                        contentInfo.music.url,
-                        musicFileName,
-                        category,
-                        videoFolder
-                    );
-
-                    results.files.music = {
-                        fileName: musicFileName,
-                        path: musicPath
-                    };
-
-                    console.log(`✓ Downloaded music: ${musicFileName}`);
-                } catch (error) {
-                    console.error('✗ Failed to download music:', error.message);
-                }
-            }
-
-            // Simpan informasi lengkap ke file JSON
-            const infoFileName = 'info.json';
-            const infoPath = path.join('./downloads', category, videoFolder, infoFileName);
-            await fs.writeJSON(infoPath, contentInfo, { spaces: 2 });
-
-            results.files.info = {
-                fileName: infoFileName,
-                path: infoPath
-            };
-
-            console.log(`✓ Saved info: ${infoFileName}`);
-
-            return results;
-
-        } catch (error) {
-            console.error('Error downloading video:', error);
-            return {
-                success: false,
-                error: 'Terjadi kesalahan saat mendownload video'
-            };
-        }
-    }
-
-    // Method utama untuk proses download lengkap
-    async processDownload(url, category = 'tiktok') {
-        try {
-            console.log('='.repeat(50));
-            console.log('🚀 Starting TikTok download process...');
-            console.log('URL:', url);
-            console.log('='.repeat(50));
-
-            // Dapatkan informasi konten
-            const contentInfo = await this.downloadContent(url);
-
-            if (!contentInfo.success) {
-                return {
-                    success: false,
-                    error: contentInfo.error || 'Gagal mendapatkan informasi konten'
-                };
-            }
-
-            console.log(`📱 Content Type: ${contentInfo.type.toUpperCase()}`);
-            console.log(`👤 Author: ${contentInfo.author.nickname} (@${contentInfo.author.username})`);
-            console.log(`📝 Title: ${contentInfo.title}`);
-
-            if (contentInfo.type === 'carousel') {
-                console.log(`🖼️  Images: ${contentInfo.images.length} items`);
-                console.log(`🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}`);
-                return await this.downloadCarousel(contentInfo, category);
-            } else {
-                console.log(`🎬 Video Duration: ${contentInfo.video.duration}s`);
-                console.log(`🎵 Music: ${contentInfo.music.title} - ${contentInfo.music.author}`);
-                return await this.downloadVideo(contentInfo, category);
-            }
-
-        } catch (error) {
-            console.error('❌ Process download error:', error);
-            return {
-                success: false,
-                error: 'Terjadi kesalahan saat memproses download'
-            };
-        }
-    }
-
-    // Method untuk menampilkan statistik konten
-    displayStats(contentInfo) {
-        if (!contentInfo.stats) return;
-
-        console.log('\n📊 Content Statistics:');
-        console.log(`   Views: ${this.formatNumber(contentInfo.stats.views)}`);
-        console.log(`   Likes: ${this.formatNumber(contentInfo.stats.likes)}`);
-        console.log(`   Comments: ${this.formatNumber(contentInfo.stats.comments)}`);
-        console.log(`   Shares: ${this.formatNumber(contentInfo.stats.shares)}`);
-
-        if (contentInfo.create_time) {
-            console.log(`   Created: ${new Date(contentInfo.create_time * 1000).toLocaleDateString()}`);
-        }
-    }
-
-    // Helper untuk format angka
-    formatNumber(num) {
-        if (num >= 1000000) {
-            return (num / 1000000).toFixed(1) + 'M';
-        } else if (num >= 1000) {
-            return (num / 1000).toFixed(1) + 'K';
-        }
-        return num.toString();
+    sanitizeFilename(filename) {
+        if (!filename) return 'video';
+        return filename
+            .replace(/[<>:"/\\|?*]/g, '')
+            .replace(/\s+/g, '_')
+            .substring(0, 100);
     }
 }
 
